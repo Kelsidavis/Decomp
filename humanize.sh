@@ -2,8 +2,8 @@
 # humanize.sh — analyze + humanize in one go, with sane defaults and logging
 export LLM_ENDPOINT=http://127.0.0.1:8080/v1/chat/completions
 export LLM_MODEL=Qwen3-14B-UD-Q5_K_XL.gguf
-export HUNT_LLM_CONCURRENCY=6
-export HUNT_LLM_MAX_TOKENS=192
+export HUNT_LLM_CONCURRENCY=8
+export HUNT_LLM_MAX_TOKENS=256
 export HUNT_MIN_SIZE=0
 export HUNT_TOPN=1000
 set -euo pipefail

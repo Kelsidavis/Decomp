@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-# tools/function_hunt/run_autodiscover.py
+# tools/function_hunt/run_autodiscover.py — robust one-pass pipeline
 from __future__ import annotations
-
-import json, sys, os, re, time, hashlib
+import json, os, re, sys, time, hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from enrich import enrich           # mutates in place; may return None
+from enrich import enrich            # mutates in place; may return None
 from label import llm_label_batch
-from report import write_report     # already writes functions.labeled.jsonl in your patched version; we also write explicitly
+from report import write_report      # writes report.md; we also ensure JSONL
 
-# --------------------------
-# Loose JSON tolerant loader
-# --------------------------
+# -------------------------
+# Loose JSON tolerant read
+# -------------------------
 HEX_RE = re.compile(r"^(0x)?[0-9a-fA-F]+$")
 
 def load_loose_json(path: Path):
@@ -24,8 +23,7 @@ def load_loose_json(path: Path):
     items, ok, lines = [], 0, text.splitlines()
     for ln in lines:
         s = ln.strip()
-        if not s:
-            continue
+        if not s: continue
         try:
             items.append(json.loads(s)); ok += 1
         except Exception:
@@ -38,9 +36,9 @@ def load_loose_json(path: Path):
     except Exception as e:
         raise ValueError(f"Unrecognized JSON format in {path}: {e}")
 
-# --------------------------
+# -------------------------
 # Schema coercion helpers
-# --------------------------
+# -------------------------
 NAME_KEYS = ["name","func_name","symbol","original_name","label","demangled","demangled_name","mangled"]
 ADDR_KEYS = ["address","addr","rva","start","start_ea","ea","entry"]
 SIZE_KEYS = ["size","len","length","nbytes","byte_len","end_ea_minus_start_ea"]
@@ -58,8 +56,7 @@ def _parse_int_like(x: Any) -> int | None:
             if s.startswith(("0x","0X")) and HEX_RE.match(s): return int(s, 16)
             if s.isdigit(): return int(s, 10)
             if HEX_RE.match(s): return int(s, 16)
-        except Exception:
-            return None
+        except Exception: return None
     return None
 
 def _first_hit(d: Dict[str, Any], keys: List[str]) -> Any:
@@ -74,11 +71,16 @@ def _get_str_list(d: Dict[str, Any], keys: List[str]) -> List[str]:
     if isinstance(v, list):
         out = []
         for t in v:
-            try: out.append(str(t)[:256])
-            except Exception: pass
+            try:
+                s = str(t)[:256]
+                if "This program cannot be run in DOS mode" in s:  # filter noisy PE header
+                    continue
+                out.append(s)
+            except Exception:
+                pass
         return out[:200]
-    try: return [str(v)[:256]]
-    except Exception: return []
+    s = str(v)[:256]
+    return [] if "This program cannot be run in DOS mode" in s else [s]
 
 def _get_text(d: Dict[str, Any], keys: List[str]) -> str:
     v = _first_hit(d, keys)
@@ -105,7 +107,6 @@ def _coerce_one(f: Dict[str, Any]) -> Dict[str, Any] | None:
         else:
             name = "sub_unknown"
 
-    # drop totally empty entries
     if not addr_hex and not snippet and not imports and not strings:
         return None
 
@@ -146,18 +147,14 @@ def _coerce_funcs_any(target: Any) -> List[Dict[str, Any]]:
         uniq.append(f)
     return uniq
 
-# -------------------------------------------
-# Effective size estimation & dedup by code
-# -------------------------------------------
+# -------------------------
+# Effective size & dedupe
+# -------------------------
 def _build_next_addr_delta(funcs: List[Dict[str, Any]]) -> Dict[int,int | None]:
-    # Build map: address(int) -> delta to next address
     addrs = sorted(a for a in (_parse_int_like(f.get("address")) for f in funcs) if a is not None)
     nxt: Dict[int,int | None] = {}
     for i, a in enumerate(addrs):
-        if i+1 < len(addrs):
-            nxt[a] = addrs[i+1] - a
-        else:
-            nxt[a] = None
+        nxt[a] = (addrs[i+1] - a) if (i+1 < len(addrs)) else None
     return nxt
 
 def _eff_size(f: Dict[str, Any], nxt: Dict[int,int | None]) -> int:
@@ -167,13 +164,9 @@ def _eff_size(f: Dict[str, Any], nxt: Dict[int,int | None]) -> int:
     if ai is not None:
         d = nxt.get(ai)
         if d and d > 0:
-            # clamp huge gaps
             return min(d, 4096)
     snip = f.get("snippet") or ""
-    if snip:
-        # rough proxy: 1 char ~ 0.25 byte
-        return min(4096, max(0, len(snip)//4))
-    return 0
+    return min(4096, max(0, len(snip)//4)) if snip else 0
 
 def _norm_snippet(s: str) -> str:
     if not s: return ""
@@ -181,10 +174,6 @@ def _norm_snippet(s: str) -> str:
     return s[:4000]
 
 def _dedupe_by_snippet(funcs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[int]]:
-    """
-    Returns (unique_funcs, index_map) where index_map[i] = index into unique_funcs
-    that corresponds to funcs[i].
-    """
     uniq: List[Dict[str, Any]] = []
     idx_map: List[int] = [0]*len(funcs)
     seen: Dict[str,int] = {}
@@ -202,11 +191,12 @@ def _dedupe_by_snippet(funcs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
         idx_map[i] = j
     return uniq, idx_map
 
-# --------------------------
-# Autodiscovery (work root)
-# --------------------------
+# -------------------------
+# Work dir autodiscovery
+# -------------------------
 def _best_bin(work_dir: Path) -> Path | None:
-    cands = [p for p in work_dir.iterdir() if p.is_file() and p.suffix.lower() not in {".json",".md",".txt",".log",".yml",".yaml",".toml"}]
+    cands = [p for p in work_dir.iterdir()
+             if p.is_file() and p.suffix.lower() not in {".json",".md",".txt",".log",".yml",".yaml",".toml"}]
     if not cands: return None
     def score(p: Path):
         s = 0
@@ -222,9 +212,8 @@ def _best_target_out(work_dir: Path, bin_path: Path | None) -> Path | None:
     stem = bin_path.stem
     exact = work_dir / f"{stem}_out.json"
     if exact.exists(): return exact
-    # fallback: any "*out*.json" preferring names containing the stem
-    candidates = [p for p in work_dir.glob("*.json") if "out" in p.name.lower()]
-    if not candidates: return None
+    cands = [p for p in work_dir.glob("*.json") if "out" in p.name.lower()]
+    if not cands: return None
     def score(p: Path):
         s = 0
         n = p.name.lower()
@@ -232,12 +221,12 @@ def _best_target_out(work_dir: Path, bin_path: Path | None) -> Path | None:
         if "target_out" in n: s += 3
         s += int(p.stat().st_mtime)
         return s
-    candidates.sort(key=score, reverse=True)
-    return candidates[0]
+    cands.sort(key=score, reverse=True)
+    return cands[0]
 
-# --------------------------
+# -------------------------
 # Main
-# --------------------------
+# -------------------------
 def main():
     work = Path("work")
     work.mkdir(exist_ok=True)
@@ -259,7 +248,7 @@ def main():
     funcs = _coerce_funcs_any(target)
     print(f"[hunt] discovered: {len(funcs)}", flush=True)
 
-    # Effective size helpers
+    # Effective size map
     nxt = _build_next_addr_delta(funcs)
 
     # Filters
@@ -275,10 +264,15 @@ def main():
         funcs = funcs[:topn]
         print(f"[hunt] taking top {topn} by size (HUNT_TOPN) → {len(funcs)}", flush=True)
 
+    lim = int(os.getenv("HUNT_LIMIT","0") or "0")
+    if lim > 0 and len(funcs) > lim:
+        funcs = funcs[:lim]
+        print(f"[hunt] limiting to first {len(funcs)} due to HUNT_LIMIT", flush=True)
+
     print(f"[hunt] functions normalized: {len(funcs)}", flush=True)
 
-    # Optional dedupe by normalized snippet (default ON)
-    do_dedupe = os.getenv("HUNT_DEDUPE", "1") not in ("0","false","False","FALSE","no","No")
+    # Optional dedupe
+    do_dedupe = os.getenv("HUNT_DEDUPE", "1") not in ("0","false","False","no","No")
     if do_dedupe and funcs:
         uniq, idx_map = _dedupe_by_snippet(funcs)
         print(f"[hunt] dedupe by snippet: unique={len(uniq)} / total={len(funcs)}", flush=True)
@@ -306,7 +300,7 @@ def main():
         labeled: List[Dict[str, Any]] = []
         for i, f in enumerate(funcs):
             lu = labeled_unique[idx_map[i]]
-            li = dict(lu)  # shallow copy
+            li = dict(lu)
             li["_addr"] = f.get("address")
             li["_orig_name"] = f.get("name")
             labeled.append(li)
@@ -320,14 +314,11 @@ def main():
 
     # Write artifacts
     print("[hunt] writing report…", flush=True)
-    write_report(labeled, out_dir=str(out_dir))  # your patched report.py also writes JSONL
-    # Ensure JSONL exists for humanize even if report.py is old:
+    write_report(labeled, out_dir=str(out_dir))
     jsonl_path = out_dir / "functions.labeled.jsonl"
-    if not jsonl_path.exists():
-        with jsonl_path.open("w", encoding="utf-8") as f:
-            for rec in labeled:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
+    with jsonl_path.open("w", encoding="utf-8") as f:
+        for rec in labeled:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     print(f"[hunt] wrote {out_dir/'report.md'}  (functions: {len(labeled)})")
     return 0
 
