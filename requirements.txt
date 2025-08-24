@@ -1,0 +1,15 @@
+# Core
+requests>=2.31.0
+PyYAML>=6.0
+tqdm>=4.66.0
+
+# Function Hunt enrichers
+yara-python>=4.5.0
+capa>=6.1.0   # or "floss" package if you want full FireEye capa tool
+
+# Parsing / source rewrite
+pycparser>=2.22
+
+# Optional (for colored logging, debugging, etc.)
+rich>=13.7.0
+
