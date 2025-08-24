@@ -32,7 +32,7 @@ The pipeline takes a Windows PE binary (`.exe`), decompiles it, generates human-
   Links system DLLs, generates dynamic wrappers for vendor DLLs, and builds with MinGW.
 
 * **Enhanced logging**
-  Both `run.sh` and `humanize.sh` now prefix logs with timestamps, show live progress %, elapsed time, and estimated time remaining. Logs are written to `work/logs/` and `work/run.<timestamp>.log`.
+  `run.sh`, `humanize.sh`, `reimplement.sh`, and `full_run.sh` now prefix logs with timestamps, show live progress %, elapsed time, and estimated time remaining. Logs are written to `work/logs/` and `work/run.<timestamp>.log`.
 
 ---
 
@@ -50,24 +50,42 @@ docker build -t ghidra-llm:latest .
 work/target.exe
 ```
 
-### 3. Run the full pipeline
+### 3. Run the analysis only
 
 ```bash
 ./run.sh --exe work/target.exe
 ```
 
+This runs headless Ghidra, extracts functions/resources, and generates
+the baseline `recovered_project/`.
+
+### 4. Run the full pipeline (analysis → humanize → reimplement)
+
+```bash
+./full_run.sh --exe work/target.exe
+```
+
 This will:
 
-* Launch the Docker container.
-* Run headless Ghidra.
-* Extract functions, imports, and resources.
-* Call the LLM to label and humanize.
-* Generate a compilable project under `work/recovered_project/`.
+* Run the Docker analysis (`run.sh`).
+* Call `humanize.sh` to label and rename functions.
+* Call `reimplement.sh` to synthesize function bodies.
+* Produce three trees:
 
-### 4. Humanize only (optional re-run)
+  * `recovered_project/` → baseline
+  * `recovered_project_human/` → LLM-renamed functions
+  * `recovered_project_impl/` → LLM-reimplemented functions
+
+### 5. Humanize only (optional re-run)
 
 ```bash
 ./humanize.sh --topn 500 --min-size 16
+```
+
+### 6. Re-implement only (optional re-run)
+
+```bash
+./reimplement.sh
 ```
 
 ---
@@ -109,6 +127,9 @@ This will:
 * `recovered_project_human/`
   Humanized project (if enabled).
 
+* `recovered_project_impl/`
+  Re-implemented project with LLM-synthesized function bodies.
+
 * `recovered_project_win/`
   Windows build scaffold with CMake + vendor shims.
 
@@ -136,9 +157,9 @@ make
 
 ---
 
-## 🧡 Next Steps
+## 🤍 Next Steps
 
 * Replace vendor stubs with real SDK headers/libs.
-* Use the LLM-generated docs (`report.md`) and `functions.labeled.jsonl` to re-implement function logic.
+* Use the LLM-generated docs (`report.md`) and `functions.labeled.jsonl` to re-implement function logic (automated in `reimplement.sh`).
 * Refactor and test: compile → run under Wine/Windows → fix.
 
