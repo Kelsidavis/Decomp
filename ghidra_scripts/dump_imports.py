@@ -1,65 +1,111 @@
-#@category Export/PE
-# -*- coding: utf-8 -*-
-# dump_imports.py  → writes /work/imports.json as:
-# { "modules": { "KERNEL32.DLL": ["CreateFileW", ...], ... } }
+#@category FunctionHunt/Export
+# Headless-friendly: dump imported symbols for the currentProgram.
+# Works on Ghidra 11.4.x. Prefers program externals; falls back to PE factory if needed.
+#
+# Usage (example):
+# analyzeHeadless <projDir> <projName> -process <binary> -postScript dump_imports.py
 
-import os, sys, json
+import json
+from java.lang import System
 
-OUT = "/work/imports.json"
+# Ghidra APIs
+from ghidra.program.model.symbol import SymbolType
+from ghidra.util.task import ConsoleTaskMonitor
 
-program = getCurrentProgram()
-mods = {}
-
-# ---- Method 1: walk ExternalManager locations (Ghidra 11.x safe) ----
+# Optional PE fallback (for raw container parse)
 try:
-    extMgr = program.getExternalManager()
-    it = extMgr.getExternalLocations()  # ExternalLocationIterator
-    while it.hasNext():
-        loc = it.next()
-        lib = loc.getLibraryName() or "UNKNOWN"
-        name = loc.getLabel()
-        if not name:
-            try:
-                ordv = loc.getOrdinal()
-                if ordv is not None and ordv >= 0:
-                    name = "ORDINAL_%d" % ordv
-            except Exception:
-                pass
-        if name:
-            mods.setdefault(lib, set()).add(name)
-except Exception as e:
-    print("[dump_imports] ExternalManager scan failed:", e)
-
-# ---- Method 2: parse PE import table (robust) ----
-try:
+    from ghidra.app.util.bin.format.pe import PortableExecutableFactory
+    from ghidra.app.util.bin.format.pe.PortableExecutable import SectionLayout
+    from ghidra.app.util.bin import BinaryReader
+    from ghidra.app.util.bin import ByteProvider
     from ghidra.app.util.bin.format.pe import PortableExecutable
-    pe = PortableExecutable.createPortableExecutable(program.getMemory(), program.getLanguage())
-    it = pe.getImageNTHeader().getOptionalHeader().getDataDirectories().getImportTable()
-    if it:
-        for imp in it.getImports():
-            dll = imp.getName()
-            s = mods.setdefault(dll, set())
-            for e in imp.getImports():
-                nm = e.getName()
-                if not nm:
-                    nm = "ORDINAL_%d" % e.getOrdinal()
-                s.add(nm)
-except Exception as e:
-    print("[dump_imports] PE import scan failed:", e)
-
-# ---- write JSON (convert sets) ----
-mods = {k: sorted(v) for k, v in mods.items() if v}
-
-# Make sure /work exists (container writes there)
-try:
-    d = os.path.dirname(OUT)
-    if d and not os.path.exists(d):
-        os.makedirs(d)
+    from ghidra.program.flatapi import FlatProgramAPI
+    from ghidra.util import Msg
 except Exception:
-    pass
+    PortableExecutableFactory = None
 
-with open(OUT, "w") as f:
-    json.dump({"modules": mods}, f, indent=2)
+def _hex(addr):
+    try:
+        return "0x%X" % addr.getOffset()
+    except Exception:
+        return None
 
-print("Wrote imports to", OUT)
+def _dump_from_externals(program):
+    """Use the program's SymbolTable/ExternalManager (most reliable)."""
+    out = []
+    symtab = program.getSymbolTable()
+    externals = symtab.getExternalSymbols()
+    for sym in externals:
+        try:
+            name = sym.getName()
+            ns = sym.getParentNamespace()
+            lib = ns.getName() if ns else None
+            addr = sym.getAddress()
+            out.append({
+                "lib": lib,
+                "name": name,
+                "addr": _hex(addr),
+            })
+        except Exception as e:
+            # keep going
+            pass
+    return out
+
+def _dump_from_pe_factory(program):
+    """Fallback: parse raw PE container with the factory API available in 11.4.x."""
+    if PortableExecutableFactory is None:
+        return []
+    try:
+        # Acquire FileBytes of the current program
+        file_bytes = program.getMemory().getAllFileBytes()
+        if not file_bytes:
+            return []
+        fb = file_bytes[0]
+        # Create ByteProvider over the entire file
+        bp = fb.getOriginalProvider()
+        pe = PortableExecutableFactory.createPortableExecutable(
+            bp, SectionLayout.MEMORY, ConsoleTaskMonitor()
+        )
+        imports = []
+        imp = pe.getImportTable()
+        if imp is None:
+            return []
+        dlls = imp.getImports()  # list of ImportInfo (per DLL)
+        for dll in dlls:
+            dll_name = dll.getName()
+            entries = dll.getImportEntries()  # list of ImportEntry
+            for ent in entries:
+                nm = ent.getName()
+                ordval = ent.getOrdinal()
+                imports.append({
+                    "lib": dll_name,
+                    "name": nm if nm else None,
+                    "ordinal": int(ordval) if ordval is not None else None
+                })
+        return imports
+    except Exception as e:
+        return []
+
+def run():
+    prog = currentProgram
+    if prog is None:
+        printerr("[dump_imports] No currentProgram loaded")
+        return
+
+    # 1) Try externals (preferred)
+    imports = _dump_from_externals(prog)
+
+    # 2) If empty, try PE factory fallback
+    if not imports:
+        imports = _dump_from_pe_factory(prog)
+
+    # 3) Emit JSON on stdout (headless-safe)
+    result = {
+        "program": prog.getName(),
+        "imports": imports,
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+if __name__ == "__main__":
+    run()
 
