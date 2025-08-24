@@ -11,8 +11,12 @@ The pipeline takes a Windows PE binary (`.exe`), decompiles it, generates human-
 * **Headless Ghidra analysis**
   Dumps functions, imports, and PE resources.
 
+* **Function Hunt & Humanization**
+  Analyzes functions, filters/dedupes, and calls an LLM to label them.
+  Produces `functions.labeled.jsonl`, rewrites source tree with human-readable names, and writes a `report.md`.
+
 * **LLM explanation**
-  Calls your configured model endpoint to annotate functions into `report.md`.
+  Calls your configured model endpoint to annotate functions with JSON labels, progress %, elapsed time, and ETA in logs.
 
 * **Code scaffolding**
   Converts the report into compilable stubs (`.c` or `.cpp`).
@@ -23,12 +27,12 @@ The pipeline takes a Windows PE binary (`.exe`), decompiles it, generates human-
   * Magic-based carving from binary.
   * Embeds assets directly into C code for buildability.
 
-* **Humanization**
-  Optionally renames functions and buckets files into modules.
-
 * **Windows build generator**
   Creates `recovered_project_win/` with CMake files.
   Links system DLLs, generates dynamic wrappers for vendor DLLs, and builds with MinGW.
+
+* **Enhanced logging**
+  Both `run.sh` and `humanize.sh` now prefix logs with timestamps, show live progress %, elapsed time, and estimated time remaining. Logs are written to `work/logs/` and `work/run.<timestamp>.log`.
 
 ---
 
@@ -40,26 +44,30 @@ The pipeline takes a Windows PE binary (`.exe`), decompiles it, generates human-
 docker build -t ghidra-llm:latest .
 ```
 
-### 2. Prepare your binary
-
-Place your target binary into the `work/` directory:
+### 2. Place your binary
 
 ```
 work/target.exe
 ```
 
-### 3. Run
+### 3. Run the full pipeline
 
 ```bash
-docker run --rm -it \
-  --add-host=host.docker.internal:host-gateway \
-  -v $PWD/work:/work \
-  -e BINARY_PATH=/work/target.exe \
-  -e OUT_JSON=/work/target_out.json \
-  -e REPORT_MD=/work/target_report.md \
-  -e LLM_ENDPOINT="http://host.docker.internal:8080/v1/chat/completions" \
-  -e LLM_MODEL="qwen3-14b-q5" \
-  ghidra-llm:latest
+./run.sh --exe work/target.exe
+```
+
+This will:
+
+* Launch the Docker container.
+* Run headless Ghidra.
+* Extract functions, imports, and resources.
+* Call the LLM to label and humanize.
+* Generate a compilable project under `work/recovered_project/`.
+
+### 4. Humanize only (optional re-run)
+
+```bash
+./humanize.sh --topn 500 --min-size 16
 ```
 
 ---
@@ -70,18 +78,20 @@ docker run --rm -it \
 * `OUT_JSON` – path to dump functions JSON.
 * `REPORT_MD` – path for human-readable LLM explanation.
 * `CODE_LANG` – `c`, `cpp`, or `auto` (default).
-  Auto-detects based on mangled symbols / STL use.
 * `HUMANIZE_MODE` – `off`, `suggest`, or `apply`.
-  Controls function renaming/module organization.
 * `BUILD_RECOVERED` – `1` to attempt a `make` build of the applied project.
 * `LLM_ENDPOINT` – model API URL (defaults to localhost:8080).
-* `LLM_MODEL` – model name (e.g. `qwen3-14b-q5`).
+* `LLM_MODEL` – model name (e.g. `Qwen3-14B-UD-Q5_K_XL.gguf`).
+* `HUNT_TOPN` – number of functions to keep by size.
+* `HUNT_LIMIT` – hard cap on number of functions.
+* `HUNT_MIN_SIZE` – drop functions below N bytes.
+* `HUNT_CAPA`, `HUNT_YARA` – enable/disable enrichment.
+* `HUNT_LLM_CONCURRENCY` – number of concurrent LLM requests.
+* `HUNT_LLM_MAX_TOKENS` – max tokens per function label (increase for more detail, at cost of speed).
 
 ---
 
 ## 📂 Output Layout
-
-After a successful run you will have:
 
 * `recovered_project/`
 
@@ -90,31 +100,30 @@ After a successful run you will have:
   * `assets/` – extracted icons, bitmaps, carved files
   * `report.md` – annotated function descriptions
 
-* `recovered_project_human_applied/`
-  Humanized project (if enabled).
+* `work/hunt/`
 
-* `imports.json`
-  DLL imports and functions.
+  * `functions.enriched.jsonl` – enriched with capa/yara.
+  * `functions.labeled.jsonl` – LLM labels (names, tags, inputs/outputs).
+  * `report.md` – human-readable explanations.
+
+* `recovered_project_human/`
+  Humanized project (if enabled).
 
 * `recovered_project_win/`
   Windows build scaffold with CMake + vendor shims.
 
-* `run.<timestamp>.log`
-  Full log of the run.
+* `run.<timestamp>.log` and `work/logs/pipeline.<timestamp>.log`
+  Full logs with timestamps, % complete, and ETA.
 
 ---
 
 ## 🛠 Building for Windows
 
-Inside the container, CMake+MinGW is included.
-A Windows project is generated automatically:
-
 ```bash
 cd work/recovered_project_win/build
-file recovered.exe   # should be PE32+
+cmake ..
+make
 ```
-
-You can also cross-compile on the host with MinGW.
 
 ---
 
@@ -127,16 +136,9 @@ You can also cross-compile on the host with MinGW.
 
 ---
 
-## 🤍 Next Steps
+## 🧡 Next Steps
 
 * Replace vendor stubs with real SDK headers/libs.
-* Use the LLM-generated docs (`report.md`) to re-implement function logic.
+* Use the LLM-generated docs (`report.md`) and `functions.labeled.jsonl` to re-implement function logic.
 * Refactor and test: compile → run under Wine/Windows → fix.
-
----
-
-## 📜 License
-
-This project is a scaffold for reverse engineering research and educational purposes.
-Please ensure you have the legal right to analyze any binaries you run through it.
 
