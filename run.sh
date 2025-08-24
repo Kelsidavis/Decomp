@@ -35,6 +35,36 @@ command -v docker >/dev/null || { echo "[!] docker not found"; exit 1; }
 mkdir -p "$WORK_DIR"
 [[ -w "$WORK_DIR" ]] || { echo "[!] WORK_DIR not writable: $WORK_DIR"; exit 1; }
 
+STAMP="$(date +%Y%m%d-%H%M%S)"
+LOG="$WORK_DIR/run.${STAMP}.log"
+PIPE_START=$(date +%s)
+
+# prefix all lines with timestamp; parse [llm] progress k/n into % + ETA
+ts_and_progress() {
+  local start_epoch="$1"
+  gawk -v start="$start_epoch" '
+    function hms(sec,  h, m, s) { h=int(sec/3600); m=int((sec%3600)/60); s=sec%60;
+      return sprintf("%02d:%02d:%02d", h,m,s) }
+    {
+      now = systime()
+      line = $0
+      if (match(line, /\[llm\] progress[[:space:]]+([0-9]+)\/([0-9]+)/, m)) {
+        done = m[1]+0; total=m[2]+0
+        elapsed = now - start
+        pct = (total>0)? int(100*done/total) : 0
+        rate = (elapsed>0 && done>0)? done/elapsed : 0
+        remain = (rate>0)? int( (total-done)/rate ) : -1
+        eta = (remain>=0)? hms(remain) : "??:??:??"
+        printf("[%s] %s | %d%% | elapsed %s | ETA %s\n",
+               strftime("%H:%M:%S", now), line, pct, hms(elapsed), eta)
+        fflush()
+      } else {
+        printf("[%s] %s\n", strftime("%H:%M:%S", now), line)
+        fflush()
+      }
+    }'
+}
+
 echo "[*] Rebuilding Docker image: $IMG_NAME"
 docker build ${NO_CACHE:-} -t "$IMG_NAME" .
 
@@ -42,7 +72,6 @@ docker build ${NO_CACHE:-} -t "$IMG_NAME" .
 if [[ -n "$EXE_ARG" ]]; then
   exe="$EXE_ARG"
 else
-  # pick exactly one .exe in WORK_DIR
   mapfile -t exes < <(ls "$WORK_DIR"/*.exe 2>/dev/null || true)
   if (( ${#exes[@]} == 0 )); then
     echo "[!] No .exe file found in $WORK_DIR (use --exe to specify)"
@@ -53,7 +82,6 @@ else
     echo "[!] Multiple .exe found; using first: $(basename "$exe")"
   fi
 fi
-
 [[ -f "$exe" ]] || { echo "[!] EXE not found: $exe"; exit 1; }
 
 base=$(basename "$exe")
@@ -63,10 +91,11 @@ echo "============================================="
 echo "[*] Target: $base"
 echo "    Work : $WORK_DIR"
 echo "    Lang : $CODE_LANG_DEFAULT"
+echo " Log    : $LOG"
 echo "============================================="
 
-# ---------------- run ----------------
-docker run --rm -it \
+# ---------------- run (with timestamp + progress filter) ----------------
+docker run --rm -i \
   --user "$(id -u):$(id -g)" \
   --add-host=host.docker.internal:host-gateway \
   -v "$WORK_DIR":/work \
@@ -82,10 +111,14 @@ docker run --rm -it \
   -e HUMANIZE_MODE="${HUMANIZE_DEFAULT}" \
   -e BUILD_RECOVERED="${BUILD_REC_DEFAULT}" \
   -e DEBUG="${DEBUG_DEFAULT}" \
-  "$IMG_NAME"
+  "$IMG_NAME" 2>&1 | ts_and_progress "$PIPE_START" | tee "$LOG"
 
-echo
+PIPE_ELAPSED=$(( $(date +%s) - PIPE_START ))
+printf "=============================================\n"
 echo "[✓] Finished: $base"
-echo "    → recovered_project/ inside $WORK_DIR"
-echo "    → run.<timestamp>.log in $WORK_DIR (full pipeline log)"
+echo "Artifacts:"
+echo "  - recovered_project/ inside $WORK_DIR"
+echo "  - run.<timestamp>.log → $LOG"
+echo "Total time: $(printf "%02d:%02d:%02d" $((PIPE_ELAPSED/3600)) $(((PIPE_ELAPSED%3600)/60)) $((PIPE_ELAPSED%60)))"
+printf "=============================================\n"
 
