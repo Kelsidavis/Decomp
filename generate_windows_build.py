@@ -1,30 +1,22 @@
 #!/usr/bin/env python3
 """
 Generate Windows build files and a minimal app.rc, filtering out corrupt icons/PNGs.
-If SKIP_RESOURCES=1 is set in the environment, the RC step is omitted entirely.
+If the input project path isn't provided or doesn't exist, auto-discover it under
+./work (host) or /work (container).
 
-Assumptions:
-- Assets live under: work/recovered_project/assets/carved/
-- Output RC path:    work/recovered_project_win/res/app.rc
-- Called as part of your Windows build orchestration.
+Usage:
+  python3 generate_windows_build.py [/path/to/recovered_project]
 
-This script is conservative: it only includes images that pass lightweight validation.
+Env:
+  SKIP_RESOURCES=1   -> skip writing app.rc (to unblock builds)
 """
 
 import os
 import sys
-import re
 from pathlib import Path
+from typing import List, Optional, Tuple
 
-ROOT = Path(os.getenv("ROOT_DIR", ".")).resolve()
-WORK = ROOT / "work"
-ASSETS = WORK / "recovered_project" / "assets" / "carved"
-OUTDIR = WORK / "recovered_project_win" / "res"
-OUTRC = OUTDIR / "app.rc"
-
-VALID_ICO_EXT = {".ico", ".cur"}     # include cursors if present
-VALID_PNG_EXT = {".png"}
-
+# ---------- simple validators ----------
 def is_valid_png(p: Path) -> bool:
     try:
         with p.open("rb") as f:
@@ -34,79 +26,131 @@ def is_valid_png(p: Path) -> bool:
         return False
 
 def is_valid_ico(p: Path) -> bool:
-    """
-    Minimal ICO/CUR sanity:
-    - 6-byte header: reserved(0), type(1=ICO or 2=CUR), count>0
-    - not empty/trivial size
-    """
+    # ICO/CUR 6-byte header: 0, type in {1,2}, count > 0
     try:
         with p.open("rb") as f:
             hdr = f.read(6)
             if len(hdr) < 6:
                 return False
             reserved = int.from_bytes(hdr[0:2], "little")
-            typ = int.from_bytes(hdr[2:4], "little")
-            count = int.from_bytes(hdr[4:6], "little")
-            if reserved != 0:
-                return False
-            if typ not in (1, 2):     # 1=ICO, 2=CUR
-                return False
-            if count <= 0:
+            typ      = int.from_bytes(hdr[2:4], "little")
+            count    = int.from_bytes(hdr[4:6], "little")
+            if reserved != 0 or typ not in (1, 2) or count <= 0:
                 return False
         return p.stat().st_size > 32
     except Exception:
         return False
 
-def find_assets():
-    if not ASSETS.exists():
-        return [], []
+# ---------- discovery ----------
+def _candidates_under(root: Path) -> List[Path]:
+    if not root.exists():
+        return []
+    pats = [
+        "recovered_project",
+        "recovered*project*",
+        "recovered*/",
+        "*recovered*",
+    ]
+    cands: List[Path] = []
+    for pat in pats:
+        cands.extend([p for p in root.glob(pat) if p.is_dir()])
+    # uniq by resolved path
+    uniq = []
+    seen = set()
+    for p in cands:
+        try:
+            r = p.resolve()
+        except Exception:
+            continue
+        if r in seen:
+            continue
+        seen.add(r)
+        uniq.append(p)
+    # sort newest first
+    uniq.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return uniq
+
+def autodiscover_project(proj_arg: Optional[str]) -> Optional[Path]:
+    # 1) if arg provided and exists → use it
+    if proj_arg:
+        p = Path(proj_arg).resolve()
+        if p.exists() and p.is_dir():
+            print(f"[rc] using provided project: {p}")
+            return p
+        else:
+            print(f"[rc] provided project not found: {p}")
+
+    # 2) try host root ./work
+    host_root = Path("./work").resolve()
+    cands = _candidates_under(host_root)
+    if cands:
+        print(f"[rc] autodiscovered project (host): {cands[0]}")
+        return cands[0].resolve()
+
+    # 3) try container root /work
+    cont_root = Path("/work")
+    cands = _candidates_under(cont_root)
+    if cands:
+        print(f"[rc] autodiscovered project (container): {cands[0]}")
+        return cands[0].resolve()
+
+    return None
+
+# ---------- assets + rc writing ----------
+def find_assets(assets_dir: Path) -> Tuple[List[Path], List[Path]]:
     icons, pngs = [], []
-    for p in sorted(ASSETS.glob("*")):
+    if not assets_dir.exists():
+        return icons, pngs
+    for p in sorted(assets_dir.iterdir()):
         if not p.is_file():
             continue
         ext = p.suffix.lower()
-        if ext in VALID_ICO_EXT:
-            if is_valid_ico(p):
-                icons.append(p)
-            else:
-                print(f"[rc] skipping bad ico: {p}", file=sys.stderr)
-        elif ext in VALID_PNG_EXT:
-            if is_valid_png(p):
-                pngs.append(p)
-            else:
-                print(f"[rc] skipping bad png: {p}", file=sys.stderr)
+        if ext in {".ico", ".cur"}:
+            if is_valid_ico(p): icons.append(p)
+            else: print(f"[rc] skipping bad ico: {p}", file=sys.stderr)
+        elif ext == ".png":
+            if is_valid_png(p): pngs.append(p)
+            else: print(f"[rc] skipping bad png: {p}", file=sys.stderr)
     return icons, pngs
 
-def write_app_rc(icons, pngs):
-    OUTDIR.mkdir(parents=True, exist_ok=True)
-    lines = []
-    lines.append('// Auto-generated resource script')
-    lines.append('#include <windows.h>')
-    lines.append('')
-
-    # One main icon if present (use the first valid .ico)
+def write_app_rc(out_rc: Path, icons: List[Path], pngs: List[Path]) -> None:
+    out_rc.parent.mkdir(parents=True, exist_ok=True)
+    lines = ['// Auto-generated resource script', '#include <windows.h>', '']
     if icons:
         main_ico = icons[0]
-        lines.append('IDI_APP_ICON ICON "%s"' % str(main_ico).replace("\\", "\\\\"))
+        lines.append(f'IDI_APP_ICON ICON "{str(main_ico).replace("\\\\","/")}"')
     else:
         print("[rc] no valid .ico found; resource will not include an app icon", file=sys.stderr)
-
-    # Optional PNG include (if you use them with custom loaders; windres doesn't embed PNG as icon)
-    # You can create user-defined resources like:
-    #   APPPNG1 RCDATA "path/to/img.png"
     for i, p in enumerate(pngs):
-        lines.append('APPPNG%d RCDATA "%s"' % (i+1, str(p).replace("\\", "\\\\")))
+        lines.append(f'APPPNG{i+1} RCDATA "{str(p).replace("\\\\","/")}"')
+    out_rc.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[rc] wrote {out_rc} (icons={len(icons)}, pngs={len(pngs)})")
 
-    OUTRC.write_text("\n".join(lines), encoding="utf-8")
-    print(f"[rc] wrote {OUTRC} (icons={len(icons)}, pngs={len(pngs)})")
+def main() -> int:
+    if len(sys.argv) >= 2:
+        proj = autodiscover_project(sys.argv[1])
+    else:
+        proj = autodiscover_project(None)
 
-def main():
-    if os.getenv("SKIP_RESOURCES", "") in ("1", "true", "TRUE", "yes", "YES"):
+    if proj is None:
+        print("[rc] recovered project not found under ./work or /work", file=sys.stderr)
+        print("    Try: python3 generate_windows_build.py ./work/recovered_project", file=sys.stderr)
+        return 2
+
+    # Derive out dir: <proj>  ->  <proj>_win/res/app.rc
+    out_root = proj.parent / (proj.name + "_win")
+    out_res  = out_root / "res"
+    out_rc   = out_res / "app.rc"
+
+    # Assets in <proj>/assets/carved
+    assets_dir = proj / "assets" / "carved"
+
+    if os.getenv("SKIP_RESOURCES","") in ("1","true","TRUE","yes","YES"):
         print("[rc] SKIP_RESOURCES=1 → not generating app.rc")
         return 0
 
-    icons, pngs = find_assets()
-    write_app_rc(icons, pngs)
+    icons, pngs = find_assets(assets_dir)
+    write_app_rc(out_rc, icons, pngs)
     return 0
 
 if __name__ == "__main__":

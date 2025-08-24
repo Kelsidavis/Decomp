@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-import json, sys, os, re, time
+# tools/function_hunt/run_autodiscover.py
+from __future__ import annotations
+
+import json, sys, os, re, time, hashlib
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
-from enrich import enrich
+from enrich import enrich           # mutates in place; may return None
 from label import llm_label_batch
-from report import write_report
+from report import write_report     # already writes functions.labeled.jsonl in your patched version; we also write explicitly
 
-# ---------- tolerant JSON loader ----------
+# --------------------------
+# Loose JSON tolerant loader
+# --------------------------
+HEX_RE = re.compile(r"^(0x)?[0-9a-fA-F]+$")
+
 def load_loose_json(path: Path):
     text = path.read_text(encoding="utf-8", errors="ignore").strip()
-    # 1) normal JSON
     try:
         return json.loads(text)
     except Exception:
         pass
-    # 2) JSON Lines (NDJSON)
     items, ok, lines = [], 0, text.splitlines()
     for ln in lines:
         s = ln.strip()
@@ -27,42 +32,32 @@ def load_loose_json(path: Path):
             pass
     if ok and ok >= max(1, len(lines)//2):
         return items
-    # 3) concatenated objects ...}{...
     try:
         fixed = "[" + re.sub(r"}\s*{", "},{", text) + "]"
         return json.loads(fixed)
     except Exception as e:
         raise ValueError(f"Unrecognized JSON format in {path}: {e}")
 
-# ---------- helpers for schema variance ----------
-NAME_KEYS   = ["name","func_name","symbol","original_name","label","demangled","demangled_name","mangled"]
-ADDR_KEYS   = ["address","addr","rva","start","start_ea","ea","entry"]
-SIZE_KEYS   = ["size","len","length","nbytes","byte_len","end_ea_minus_start_ea"]
-CODE_KEYS   = ["decompiled","pseudocode","c","code","decomp","hlil","pcode","pseudo"]
-IMPT_KEYS   = ["imports","calls","callees","xrefs_to","external_calls"]
-STR_KEYS    = ["strings","strs","literals","const_strings"]
-
-HEX_RE = re.compile(r"^(0x)?[0-9a-fA-F]+$")
+# --------------------------
+# Schema coercion helpers
+# --------------------------
+NAME_KEYS = ["name","func_name","symbol","original_name","label","demangled","demangled_name","mangled"]
+ADDR_KEYS = ["address","addr","rva","start","start_ea","ea","entry"]
+SIZE_KEYS = ["size","len","length","nbytes","byte_len","end_ea_minus_start_ea"]
+CODE_KEYS = ["decompiled","pseudocode","c","code","decomp","hlil","pcode","pseudo"]
+IMPT_KEYS = ["imports","calls","callees","xrefs_to","external_calls"]
+STR_KEYS  = ["strings","strs","literals","const_strings"]
 
 def _parse_int_like(x: Any) -> int | None:
-    if x is None: return None
-    if isinstance(x, bool): return None
-    if isinstance(x, (int,)):
-        return int(x)
-    if isinstance(x, float):
-        # don’t treat tiny floats as addresses
-        val = int(x)
-        return val if val != 0 else None
+    if x is None or isinstance(x, bool): return None
+    if isinstance(x, int): return x
+    if isinstance(x, float): return int(x) or None
     if isinstance(x, str):
         s = x.strip()
         try:
-            if s.startswith(("0x","0X")) and HEX_RE.match(s):
-                return int(s, 16)
-            if s.isdigit():
-                return int(s, 10)
-            # sometimes decimal-ish in strings
-            if HEX_RE.match(s):
-                return int(s, 16)
+            if s.startswith(("0x","0X")) and HEX_RE.match(s): return int(s, 16)
+            if s.isdigit(): return int(s, 10)
+            if HEX_RE.match(s): return int(s, 16)
         except Exception:
             return None
     return None
@@ -79,62 +74,45 @@ def _get_str_list(d: Dict[str, Any], keys: List[str]) -> List[str]:
     if isinstance(v, list):
         out = []
         for t in v:
-            try:
-                out.append(str(t)[:256])
-            except Exception:
-                pass
+            try: out.append(str(t)[:256])
+            except Exception: pass
         return out[:200]
-    try:
-        return [str(v)[:256]]
-    except Exception:
-        return []
+    try: return [str(v)[:256]]
+    except Exception: return []
 
 def _get_text(d: Dict[str, Any], keys: List[str]) -> str:
     v = _first_hit(d, keys)
     if v is None: return ""
     if isinstance(v, (dict, list)):
-        try:
-            return json.dumps(v)[:4000]
-        except Exception:
-            return ""
+        try: return json.dumps(v)[:4000]
+        except Exception: return ""
     return str(v)[:4000]
 
 def _coerce_one(f: Dict[str, Any]) -> Dict[str, Any] | None:
-    # name
-    name = _first_hit(f, NAME_KEYS)
-    # address
+    name     = _first_hit(f, NAME_KEYS)
     addr_raw = _first_hit(f, ADDR_KEYS)
-    addr_i = _parse_int_like(addr_raw)
+    addr_i   = _parse_int_like(addr_raw)
     addr_hex = ("0x%X" % addr_i) if addr_i is not None else (str(addr_raw) if addr_raw else "")
-    # size
     size_raw = _first_hit(f, SIZE_KEYS)
-    size_i = _parse_int_like(size_raw) or 0
+    size_i   = _parse_int_like(size_raw) or 0
+    snippet  = _get_text(f, CODE_KEYS)
+    imports  = _get_str_list(f, IMPT_KEYS)
+    strings  = _get_str_list(f, STR_KEYS)
 
-    # snippet / imports / strings
-    snippet = _get_text(f, CODE_KEYS)
-    imports = _get_str_list(f, IMPT_KEYS)
-    strings = _get_str_list(f, STR_KEYS)
-
-    # name fallback from address
     if not name:
         if addr_i is not None:
-            name = "sub_%x" % addr_i
-        elif isinstance(addr_raw, str) and addr_raw:
-            # strip 0x if present
-            nn = addr_raw.lower().replace("0x","")
-            nn = re.sub(r"[^0-9a-f]", "", nn)[:8] or "unknown"
-            name = f"sub_{nn}"
+            name = f"sub_{addr_i:x}"
         else:
             name = "sub_unknown"
 
-    # drop totally empty entries (no address AND no code AND no imports/strings)
+    # drop totally empty entries
     if not addr_hex and not snippet and not imports and not strings:
         return None
 
     return {
         "address": addr_hex,
         "name": str(name),
-        "size": int(size_i) if isinstance(size_i, int) else 0,
+        "size": int(size_i),
         "snippet": snippet,
         "imports": imports,
         "strings": strings,
@@ -142,18 +120,13 @@ def _coerce_one(f: Dict[str, Any]) -> Dict[str, Any] | None:
     }
 
 def _gather_funcs(obj: Any, out: List[Dict[str, Any]]):
-    """Recursively walk obj and collect function-like dicts."""
     if isinstance(obj, dict):
-        # common containers: {"functions":[...]} or {"items":[...]} etc.
         for key in ("functions","funcs","items","nodes","list"):
             if key in obj and isinstance(obj[key], list):
                 for it in obj[key]:
                     _gather_funcs(it, out)
-        # Also try coercing this dict itself
         coerced = _coerce_one(obj)
-        if coerced:
-            out.append(coerced)
-        # Recurse into nested dicts (lightly)
+        if coerced: out.append(coerced)
         for v in obj.values():
             if isinstance(v, (dict, list)):
                 _gather_funcs(v, out)
@@ -162,157 +135,200 @@ def _gather_funcs(obj: Any, out: List[Dict[str, Any]]):
             _gather_funcs(it, out)
 
 def _coerce_funcs_any(target: Any) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    _gather_funcs(target, out)
-    # de-duplicate by (name,address) pair
+    tmp: List[Dict[str, Any]] = []
+    _gather_funcs(target, tmp)
+    uniq: List[Dict[str, Any]] = []
     seen = set()
-    uniq = []
-    for f in out:
+    for f in tmp:
         key = (f["name"], f["address"])
-        if key in seen:
-            continue
+        if key in seen: continue
         seen.add(key)
         uniq.append(f)
     return uniq
 
-# ---------- autodiscovery (TOP-LEVEL ONLY) ----------
-BIN_EXTS = (".exe", ".dll", ".bin", ".elf", ".so", ".dylib", "")
-JSON_PATTERNS = (
-    "_out.json", "-out.json", ".out.json", ".target_out.json", "target_out.json",
-    "target_out.ndjson", "analysis.json"
-)
+# -------------------------------------------
+# Effective size estimation & dedup by code
+# -------------------------------------------
+def _build_next_addr_delta(funcs: List[Dict[str, Any]]) -> Dict[int,int | None]:
+    # Build map: address(int) -> delta to next address
+    addrs = sorted(a for a in (_parse_int_like(f.get("address")) for f in funcs) if a is not None)
+    nxt: Dict[int,int | None] = {}
+    for i, a in enumerate(addrs):
+        if i+1 < len(addrs):
+            nxt[a] = addrs[i+1] - a
+        else:
+            nxt[a] = None
+    return nxt
 
-def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", s.lower())
+def _eff_size(f: Dict[str, Any], nxt: Dict[int,int | None]) -> int:
+    sz = f.get("size") or 0
+    if sz: return int(sz)
+    ai = _parse_int_like(f.get("address"))
+    if ai is not None:
+        d = nxt.get(ai)
+        if d and d > 0:
+            # clamp huge gaps
+            return min(d, 4096)
+    snip = f.get("snippet") or ""
+    if snip:
+        # rough proxy: 1 char ~ 0.25 byte
+        return min(4096, max(0, len(snip)//4))
+    return 0
 
+def _norm_snippet(s: str) -> str:
+    if not s: return ""
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s[:4000]
+
+def _dedupe_by_snippet(funcs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[int]]:
+    """
+    Returns (unique_funcs, index_map) where index_map[i] = index into unique_funcs
+    that corresponds to funcs[i].
+    """
+    uniq: List[Dict[str, Any]] = []
+    idx_map: List[int] = [0]*len(funcs)
+    seen: Dict[str,int] = {}
+    for i, f in enumerate(funcs):
+        key = hashlib.sha1(_norm_snippet(f.get("snippet","")).encode("utf-8")).hexdigest() if f.get("snippet") else None
+        if key is None:
+            idx_map[i] = len(uniq)
+            uniq.append(f)
+            continue
+        j = seen.get(key)
+        if j is None:
+            j = len(uniq)
+            seen[key] = j
+            uniq.append(f)
+        idx_map[i] = j
+    return uniq, idx_map
+
+# --------------------------
+# Autodiscovery (work root)
+# --------------------------
 def _best_bin(work_dir: Path) -> Path | None:
-    candidates = []
-    for p in work_dir.glob("*"):
-        if not p.is_file(): continue
-        suf = p.suffix.lower()
-        if suf in {".json",".md",".txt",".log",".yml",".yaml",".toml"}: continue
-        if suf in BIN_EXTS or (suf == "" and p.stat().st_size > 0):
-            candidates.append(p)
-    if not candidates:
-        return None
+    cands = [p for p in work_dir.iterdir() if p.is_file() and p.suffix.lower() not in {".json",".md",".txt",".log",".yml",".yaml",".toml"}]
+    if not cands: return None
     def score(p: Path):
         s = 0
         if p.name.lower().startswith("target"): s += 3
         if p.suffix.lower() in (".exe",".dll"): s += 2
-        s += int(p.stat().st_mtime) // 1000
+        s += int(p.stat().st_mtime)
+        return s
+    cands.sort(key=score, reverse=True)
+    return cands[0]
+
+def _best_target_out(work_dir: Path, bin_path: Path | None) -> Path | None:
+    if not bin_path: return None
+    stem = bin_path.stem
+    exact = work_dir / f"{stem}_out.json"
+    if exact.exists(): return exact
+    # fallback: any "*out*.json" preferring names containing the stem
+    candidates = [p for p in work_dir.glob("*.json") if "out" in p.name.lower()]
+    if not candidates: return None
+    def score(p: Path):
+        s = 0
+        n = p.name.lower()
+        if stem.lower() in n: s += 5
+        if "target_out" in n: s += 3
+        s += int(p.stat().st_mtime)
         return s
     candidates.sort(key=score, reverse=True)
     return candidates[0]
 
-def _best_target_out(work_dir: Path, bin_path: Path | None) -> Path | None:
-    stem = _norm(bin_path.stem) if bin_path else ""
-    exacts = []
-    for suffix in JSON_PATTERNS:
-        if stem:
-            p = work_dir / f"{bin_path.stem}{suffix}"
-            if p.exists() and p.is_file(): exacts.append(p)
-        p = work_dir / suffix
-        if p.exists() and p.is_file(): exacts.append(p)
-    if exacts:
-        exacts.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return exacts[0]
-    loose = [p for p in work_dir.glob("*") if p.is_file() and p.suffix.lower()==".json" and "out" in p.name.lower()]
-    if not loose:
-        return None
-    def score(p: Path):
-        s = 0
-        base_norm = _norm(re.sub(r"(?:[_\-.]?target)?[_\-.]?out$", "", p.stem))
-        if stem and base_norm == stem: s += 10
-        elif stem and (stem in base_norm or base_norm in stem): s += 6
-        if "target_out" in p.name.lower(): s += 2
-        s += int(p.stat().st_mtime) // 1000
-        return s
-    loose.sort(key=score, reverse=True)
-    return loose[0]
-
+# --------------------------
+# Main
+# --------------------------
 def main():
-    work_dir = Path("work").resolve()
-    if not work_dir.exists():
-        print("[hunt] no ./work directory found; create it or set HUNT_BIN/HUNT_JSON", file=sys.stderr)
-        return 2
+    work = Path("work")
+    work.mkdir(exist_ok=True)
+    bin_path = _best_bin(work)
+    target_out = _best_target_out(work, bin_path)
 
-    bin_override  = os.getenv("HUNT_BIN")
-    json_override = os.getenv("HUNT_JSON")
-    out_override  = os.getenv("HUNT_OUT")
+    if not bin_path or not target_out:
+        print("[hunt] no binary or target_out found in work/", file=sys.stderr)
+        sys.exit(2)
 
-    bin_path = Path(bin_override).resolve() if bin_override else _best_bin(work_dir)
-    if not bin_path or not bin_path.exists():
-        print("[hunt] could not find a binary at work/ (root only). Set HUNT_BIN=path/to/app.exe", file=sys.stderr)
-        return 2
-
-    if json_override:
-        target_out = Path(json_override).resolve()
-        if not target_out.exists():
-            print(f"[hunt] HUNT_JSON not found: {target_out}", file=sys.stderr)
-            return 2
-    else:
-        target_out = _best_target_out(work_dir, bin_path)
-        if not target_out or not target_out.exists():
-            print(f"[hunt] no matching *target_out.json at work/ root for '{bin_path.name}'. "
-                  f"Place the JSON next to the binary or set HUNT_JSON=path/to/file.json", file=sys.stderr)
-            return 2
-
-    out_dir = Path(out_override).resolve() if out_override else (work_dir / "hunt")
+    out_dir = work / "hunt"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[hunt] binary     : {bin_path}")
     print(f"[hunt] target_out : {target_out}")
     print(f"[hunt] out dir    : {out_dir}")
 
-    try:
-        target = load_loose_json(target_out)
-    except Exception as e:
-        print(f"[hunt] failed to read JSON (loose parser): {target_out} ({e})", file=sys.stderr)
-        return 2
-
-    # extract & normalize
+    target = load_loose_json(target_out)
     funcs = _coerce_funcs_any(target)
+    print(f"[hunt] discovered: {len(funcs)}", flush=True)
 
-    # Optional gatekeepers for huge programs
-    min_size = os.getenv("HUNT_MIN_SIZE")
-    if min_size and min_size.isdigit():
-        ms = int(min_size)
+    # Effective size helpers
+    nxt = _build_next_addr_delta(funcs)
+
+    # Filters
+    min_size = int(os.getenv("HUNT_MIN_SIZE","0") or "0")
+    if min_size > 0:
         before = len(funcs)
-        funcs = [f for f in funcs if f.get("size",0) >= ms]
-        print(f"[hunt] filtered by HUNT_MIN_SIZE={ms}: {before} → {len(funcs)}")
+        funcs = [f for f in funcs if _eff_size(f, nxt) >= min_size]
+        print(f"[hunt] filtered by HUNT_MIN_SIZE={min_size}: {before} → {len(funcs)}", flush=True)
 
-    topn = os.getenv("HUNT_TOPN")
-    if topn and topn.isdigit():
-        tn = int(topn)
-        funcs.sort(key=lambda f: f.get("size",0), reverse=True)
-        funcs = funcs[:tn]
-        print(f"[hunt] taking top {tn} by size (HUNT_TOPN) → {len(funcs)}")
+    topn = int(os.getenv("HUNT_TOPN","0") or "0")
+    if topn > 0 and len(funcs) > topn:
+        funcs.sort(key=lambda f: _eff_size(f, nxt), reverse=True)
+        funcs = funcs[:topn]
+        print(f"[hunt] taking top {topn} by size (HUNT_TOPN) → {len(funcs)}", flush=True)
 
-    lim = os.getenv("HUNT_LIMIT")
-    if lim and lim.isdigit():
-        funcs = funcs[:int(lim)]
-        print(f"[hunt] limiting to first {len(funcs)} functions due to HUNT_LIMIT")
+    print(f"[hunt] functions normalized: {len(funcs)}", flush=True)
 
-    # Debug quality of extraction
-    n_unknown = sum(1 for f in funcs if f["name"].startswith("sub_unknown"))
-    n_noaddr  = sum(1 for f in funcs if not f["address"])
-    print(f"[hunt] functions normalized: {len(funcs)} (unknown-name: {n_unknown}, no-addr: {n_noaddr})", flush=True)
+    # Optional dedupe by normalized snippet (default ON)
+    do_dedupe = os.getenv("HUNT_DEDUPE", "1") not in ("0","false","False","FALSE","no","No")
+    if do_dedupe and funcs:
+        uniq, idx_map = _dedupe_by_snippet(funcs)
+        print(f"[hunt] dedupe by snippet: unique={len(uniq)} / total={len(funcs)}", flush=True)
+        label_input = uniq
+    else:
+        idx_map = list(range(len(funcs)))
+        label_input = funcs
 
+    # Enrich (mutates in place; may return None)
     print("[hunt] starting enrich()…", flush=True)
-    t0 = time.time()
-    enrich(funcs, enable_capa=bool(os.getenv("HUNT_CAPA")),
-                  enable_yara=bool(os.getenv("HUNT_YARA")),
-                  bin_path=str(bin_path))
-    print(f"[hunt] enrich() done in {time.time()-t0:.1f}s", flush=True)
+    enable_capa = bool(os.getenv("HUNT_CAPA", "1"))
+    enable_yara = bool(os.getenv("HUNT_YARA", "1"))
+    ret = enrich(label_input, enable_capa, enable_yara, str(bin_path))
+    if ret is not None:
+        label_input = ret
+    print("[hunt] enrich() done.", flush=True)
 
+    # Label with LLM
     print("[hunt] starting llm_label_batch()…", flush=True)
-    t0 = time.time()
-    labeled = llm_label_batch(funcs, os.getenv("LLM_ENDPOINT",""), os.getenv("LLM_MODEL",""))
-    print(f"[hunt] llm_label_batch() done in {time.time()-t0:.1f}s", flush=True)
+    labeled_unique = llm_label_batch(label_input, os.getenv("LLM_ENDPOINT",""), os.getenv("LLM_MODEL",""))
+    print("[hunt] llm_label_batch() done.", flush=True)
 
+    # Expand labels back to full set if deduped
+    if do_dedupe and funcs:
+        labeled: List[Dict[str, Any]] = []
+        for i, f in enumerate(funcs):
+            lu = labeled_unique[idx_map[i]]
+            li = dict(lu)  # shallow copy
+            li["_addr"] = f.get("address")
+            li["_orig_name"] = f.get("name")
+            labeled.append(li)
+    else:
+        labeled = []
+        for i, f in enumerate(funcs):
+            li = dict(labeled_unique[i])
+            li["_addr"] = f.get("address")
+            li["_orig_name"] = f.get("name")
+            labeled.append(li)
+
+    # Write artifacts
     print("[hunt] writing report…", flush=True)
-    report_path = write_report(labeled, out_dir=str(out_dir))
-    print(f"[hunt] wrote {report_path}  (functions: {len(funcs)})")
+    write_report(labeled, out_dir=str(out_dir))  # your patched report.py also writes JSONL
+    # Ensure JSONL exists for humanize even if report.py is old:
+    jsonl_path = out_dir / "functions.labeled.jsonl"
+    if not jsonl_path.exists():
+        with jsonl_path.open("w", encoding="utf-8") as f:
+            for rec in labeled:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    print(f"[hunt] wrote {out_dir/'report.md'}  (functions: {len(labeled)})")
     return 0
 
 if __name__ == "__main__":
