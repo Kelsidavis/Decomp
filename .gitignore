@@ -6,11 +6,9 @@ __pycache__/
 *.pdb
 *.egg-info/
 .venv/
-tools/ir_codegen/.venv/
-tools/ir_codegen/__pycache__/
 tools/__pycache__/
+tools/function_hunt/__pycache__/
 
 # Docker build artifacts
 work/
-runs/
 
