@@ -1,134 +1,139 @@
 #!/usr/bin/env bash
+# full_run.sh — end-to-end pipeline (decompile → humanize → reimplement)
+# Logs to work/logs/full_run.<timestamp>.log
+
 set -euo pipefail
 
-# ---------------- config ----------------
-IMG_NAME="${IMG_NAME:-ghidra-llm:latest}"
-WORK_DIR="${WORK_DIR:-$HOME/Desktop/decomp/work}"
-LLM_ENDPOINT_DEFAULT="${LLM_ENDPOINT_DEFAULT:-http://host.docker.internal:8080/v1/chat/completions}"
-LLM_MODEL_DEFAULT="${LLM_MODEL_DEFAULT:-qwen3-14b-q5}"
-CODE_LANG_DEFAULT="${CODE_LANG_DEFAULT:-auto}"
-HUMANIZE_DEFAULT="${HUMANIZE_DEFAULT:-apply}"
-BUILD_REC_DEFAULT="${BUILD_REC_DEFAULT:-0}"
-DEBUG_DEFAULT="${DEBUG_DEFAULT:-1}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# ---------------- flags ----------------
-EXE_ARG=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --exe) EXE_ARG="${2:-}"; shift 2 ;;
-    --model) LLM_MODEL_DEFAULT="${2:-}"; shift 2 ;;
-    --endpoint) LLM_ENDPOINT_DEFAULT="${2:-}"; shift 2 ;;
-    --lang) CODE_LANG_DEFAULT="${2:-}"; shift 2 ;;
-    --humanize) HUMANIZE_DEFAULT="${2:-}"; shift 2 ;;
-    --build) BUILD_REC_DEFAULT="1"; shift 1 ;;
-    --no-cache) NO_CACHE="--no-cache"; shift 1 ;;
-    -h|--help)
-      echo "Usage: $0 [--exe path.exe] [--model NAME] [--endpoint URL] [--lang auto|c|cpp] [--humanize off|suggest|apply] [--build] [--no-cache]"
-      exit 0
-      ;;
-    *) echo "Unknown arg: $1"; exit 1 ;;
-  esac
-done
+# -------- Defaults (override via env) --------
+: "${WORK_DIR:=work}"
+: "${LLM_ENDPOINT:=http://127.0.0.1:8080/v1/chat/completions}"
+: "${LLM_MODEL:=Qwen3-14B-UD-Q5_K_XL.gguf}"
 
-# ---------------- prerequisites ----------------
-command -v docker >/dev/null || { echo "[!] docker not found"; exit 1; }
-mkdir -p "$WORK_DIR"
-[[ -w "$WORK_DIR" ]] || { echo "[!] WORK_DIR not writable: $WORK_DIR"; exit 1; }
+# Humanize defaults
+: "${HUNT_TOPN:=1000}"
+: "${HUNT_MIN_SIZE:=0}"
+: "${ENABLE_FLOSS:=1}"
 
+# Reimplement defaults
+: "${REIMPL_THRESHOLD:=0.78}"
+: "${REIMPL_MAX_FNS:=120}"
+
+# -------- Logging --------
+mkdir -p "$WORK_DIR/logs"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-LOG="$WORK_DIR/run.${STAMP}.log"
-PIPE_START=$(date +%s)
+LOG="$WORK_DIR/logs/full_run.${STAMP}.log"
+exec > >(stdbuf -oL -eL tee -a "$LOG") 2>&1
 
-# ---------------- helpers ----------------
-ts_and_progress() {
-  local start_epoch="$1"
-  awk -v start="$start_epoch" '
-    function hms(sec,  h, m, s) { h=int(sec/3600); m=int((sec%3600)/60); s=sec%60;
-      return sprintf("%02d:%02d:%02d", h,m,s) }
-    {
-      now = systime()
-      line = $0
-      if (match(line, /\[llm\] progress[[:space:]]+([0-9]+)\/([0-9]+)/, m)) {
-        done = m[1]+0; total=m[2]+0
-        elapsed = now - start
-        pct = (total>0)? int(100*done/total) : 0
-        rate = (elapsed>0 && done>0)? done/elapsed : 0
-        remain = (rate>0)? int( (total-done)/rate ) : -1
-        eta = (remain>=0)? hms(remain) : "??:??:??"
-        printf("[%s] %s | %d%% | elapsed %s | ETA %s\n",
-               strftime("%H:%M:%S", now), line, pct, hms(elapsed), eta)
-        fflush()
-      } else {
-        printf("[%s] %s\n", strftime("%H:%M:%S", now), line)
-        fflush()
-      }
-    }'
+trap 'echo "[error] pipeline failed (line $LINENO). See: $LOG"; exit 1' ERR
+
+banner() {
+  echo "=================================================="
+  echo " $*"
+  echo " Timestamp: $STAMP"
+  echo " Log: $LOG"
+  echo "=================================================="
 }
 
-# ---------------- target selection ----------------
-if [[ -n "$EXE_ARG" ]]; then
-  exe="$EXE_ARG"
+llm_check() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "[warn] curl not found — skipping LLM endpoint check"
+    return 0
+  fi
+  echo "[ok] checking LLM endpoint… ($LLM_ENDPOINT)"
+  # tiny health probe; tolerant of different server shapes
+  if ! curl -sS -m 2 -H 'Content-Type: application/json' \
+      -d '{"model":"'"${LLM_MODEL}"'","messages":[{"role":"user","content":"ping"}],"max_tokens":2}' \
+      "$LLM_ENDPOINT" >/dev/null; then
+    echo "[warn] LLM endpoint not reachable or refusing requests. Pipeline will continue, but labels/re-impl may degrade."
+  else
+    echo "[ok] LLM endpoint responding."
+  fi
+}
+
+summary_line() {
+  printf "%-22s %s\n" "$1" "$2"
+}
+
+# -------- Header --------
+banner "FULL RUN — Decompile → Humanize → Re-implement"
+summary_line "WORK_DIR:" "$WORK_DIR"
+summary_line "LLM_MODEL:" "${LLM_MODEL:-<none>}"
+summary_line "LLM_ENDPOINT:" "${LLM_ENDPOINT:-<none>}"
+summary_line "HUNT_TOPN:" "$HUNT_TOPN"
+summary_line "HUNT_MIN_SIZE:" "$HUNT_MIN_SIZE"
+summary_line "REIMPL_THRESHOLD:" "$REIMPL_THRESHOLD"
+summary_line "REIMPL_MAX_FNS:" "$REIMPL_MAX_FNS"
+echo
+
+llm_check
+echo
+
+# -------- Stage 1: Base workflow (your existing run.sh) --------
+if [[ -x ./run.sh ]]; then
+  echo "---- [1/3] Running base workflow: ./run.sh ----"
+  ./run.sh
+  echo "---- [1/3] run.sh complete ----"
 else
-  mapfile -t exes < <(ls "$WORK_DIR"/*.exe 2>/dev/null || true)
-  if (( ${#exes[@]} == 0 )); then
-    echo "[!] No .exe file found in $WORK_DIR (use --exe to specify)"
-    exit 1
-  fi
-  exe="${exes[0]}"
-  if (( ${#exes[@]} > 1 )); then
-    echo "[!] Multiple .exe found; using first: $(basename "$exe")"
-  fi
+  echo "[warn] ./run.sh not found or not executable — skipping base stage"
 fi
-[[ -f "$exe" ]] || { echo "[!] EXE not found: $exe"; exit 1; }
+echo
 
-base=$(basename "$exe")
-stem="${base%.*}"
+# -------- Stage 2: Humanize (analyze + label + rename) --------
+if [[ ! -x ./humanize.sh ]]; then
+  echo "[error] humanize.sh not found or not executable"; exit 2
+fi
 
-echo "============================================="
-echo "[*] Target: $base"
-echo "    Work : $WORK_DIR"
-echo "    Lang : $CODE_LANG_DEFAULT"
-echo " Log    : $LOG"
-echo "============================================="
+echo "---- [2/3] Humanize source (Function Hunt + LLM) ----"
+# Pass through key env; humanize.sh already handles venv, FLOSS, progress, etc.
+HUNT_TOPN="$HUNT_TOPN" \
+HUNT_MIN_SIZE="$HUNT_MIN_SIZE" \
+ENABLE_FLOSS="$ENABLE_FLOSS" \
+LLM_ENDPOINT="$LLM_ENDPOINT" \
+LLM_MODEL="$LLM_MODEL" \
+./humanize.sh
 
-# ---------------- stage 1: docker analysis ----------------
-echo "[*] Rebuilding Docker image: $IMG_NAME"
-docker build ${NO_CACHE:-} -t "$IMG_NAME" .
+echo "---- [2/3] humanize.sh complete ----"
+echo
 
-docker run --rm -i \
-  --user "$(id -u):$(id -g)" \
-  --add-host=host.docker.internal:host-gateway \
-  -v "$WORK_DIR":/work \
-  -e GHIDRA_PROJECT_DIR="/tmp/ghidra_proj_${stem}" \
-  -e GHIDRA_PROJECT_NAME="proj_${stem}" \
-  -e BINARY_PATH="/work/$base" \
-  -e OUT_JSON="/work/${stem}_out.json" \
-  -e REPORT_MD="/work/${stem}_report.md" \
-  -e LLM_ENDPOINT="${LLM_ENDPOINT_DEFAULT}" \
-  -e LLM_MODEL="${LLM_MODEL_DEFAULT}" \
-  -e MAX_FUNC_TOKENS=5000 \
-  -e CODE_LANG="${CODE_LANG_DEFAULT}" \
-  -e HUMANIZE_MODE="${HUMANIZE_DEFAULT}" \
-  -e BUILD_RECOVERED="${BUILD_REC_DEFAULT}" \
-  -e DEBUG="${DEBUG_DEFAULT}" \
-  "$IMG_NAME" 2>&1 | ts_and_progress "$PIPE_START" | tee "$LOG"
+# Expected artifacts from humanize:
+MAPPING="work/hunt/functions.labeled.jsonl"
+SRC_HUMAN="work/recovered_project_human/src"
+if [[ ! -s "$MAPPING" ]]; then
+  echo "[error] expected mapping missing: $MAPPING"; exit 3
+fi
+if [[ ! -d "$SRC_HUMAN" ]]; then
+  echo "[warn] humanized src dir not found: $SRC_HUMAN (continuing)"
+fi
 
-# ---------------- stage 2: humanize ----------------
-echo "[*] Running humanize.sh automatically…" | tee -a "$LOG"
-"$SCRIPT_DIR/humanize.sh" --topn 500 --min-size 16 2>&1 | ts_and_progress "$PIPE_START" | tee -a "$LOG"
+# -------- Stage 3: Re-implementation (AST-safe body replacement + tests) --------
+if [[ ! -x ./reimplement.sh ]]; then
+  echo "[error] reimplement.sh not found or not executable"; exit 4
+fi
 
-# ---------------- stage 3: reimplement ----------------
-echo "[*] Running reimplement.sh automatically…" | tee -a "$LOG"
-"$SCRIPT_DIR/reimplement.sh" 2>&1 | ts_and_progress "$PIPE_START" | tee -a "$LOG"
+echo "---- [3/3] Re-implementation stage ----"
+REIMPL_THRESHOLD="$REIMPL_THRESHOLD" \
+REIMPL_MAX_FNS="$REIMPL_MAX_FNS" \
+LLM_ENDPOINT="$LLM_ENDPOINT" \
+LLM_MODEL="$LLM_MODEL" \
+./reimplement.sh
 
-PIPE_ELAPSED=$(( $(date +%s) - PIPE_START ))
-printf "=============================================\n"
-echo "[✓] Full pipeline complete: $base"
-echo "Artifacts:"
-echo "  - recovered_project/        → raw decompile"
-echo "  - recovered_project_human/  → with LLM-renamed funcs"
-echo "  - recovered_project_impl/   → with re-implemented funcs"
-echo "  - run.<timestamp>.log       → $LOG"
-echo "Total time: $(printf "%02d:%02d:%02d" $((PIPE_ELAPSED/3600)) $(((PIPE_ELAPSED%3600)/60)) $((PIPE_ELAPSED%60)))"
-printf "=============================================\n"
+echo "---- [3/3] reimplement.sh complete ----"
+echo
+
+# -------- Summary --------
+HUMAN_OUT="work/recovered_project_human/src"
+REIMPL_OUT="work/recovered_project_reimpl/src"
+REPORT_MD="work/hunt/report.md"
+
+echo "================= SUMMARY ================="
+[[ -f "$REPORT_MD" ]]   && summary_line "Report:" "$REPORT_MD"
+[[ -f "$MAPPING" ]]     && summary_line "Mapping:" "$MAPPING"
+[[ -d "$HUMAN_OUT" ]]   && summary_line "Humanized src:" "$HUMAN_OUT"
+[[ -d "$REIMPL_OUT" ]]  && summary_line "Re-impl src:" "$REIMPL_OUT"
+summary_line "Log:" "$LOG"
+echo "==========================================="
+echo "[ok] full pipeline finished successfully."
 
