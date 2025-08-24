@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# humanize.sh — analyze + humanize with logging, cache/resume, ETA
+# humanize.sh — analyze + humanize with logging, cache/resume, ETA, and env bootstrap
 set -euo pipefail
 
-# ---------- defaults (override via env) ----------
+# ---------- knobs (override via env) ----------
 : "${LLM_ENDPOINT:=http://127.0.0.1:8080/v1/chat/completions}"
 : "${LLM_MODEL:=Qwen3-14B-UD-Q5_K_XL.gguf}"
 : "${HUNT_LLM_CONCURRENCY:=6}"
@@ -11,13 +11,18 @@ set -euo pipefail
 : "${HUNT_TOPN:=1000}"
 : "${HUNT_CACHE:=1}"
 
+# bootstrap controls
+: "${BOOTSTRAP:=1}"               # create .venv + install deps if needed
+: "${REQUIREMENTS:=}"             # optional path to requirements.txt (installed into venv if set)
+: "${PIN_PYCC:=pycparser}"        # allow pin, e.g. pycparser==2.21
+
 RESET_RUN=0
-# Simple arg parsing (supports: --reset-run, --topn N, --min-size N)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --reset-run) RESET_RUN=1; shift ;;
     --topn)      export HUNT_TOPN="${2:-$HUNT_TOPN}"; shift 2 ;;
     --min-size)  export HUNT_MIN_SIZE="${2:-$HUNT_MIN_SIZE}"; shift 2 ;;
+    --no-bootstrap) BOOTSTRAP=0; shift ;;
     *) echo "[warn] unknown arg: $1" >&2; shift ;;
   esac
 done
@@ -25,12 +30,85 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Optional reset of prior run artifacts
-if [[ "$RESET_RUN" == "1" ]]; then
-  rm -f work/hunt/functions.labeled.jsonl work/hunt/.progress
-  echo "[reset] cleared work/hunt/functions.labeled.jsonl and .progress"
-fi
+# ---------- lightweight bootstrap ----------
+_activate_venv() {
+  # prefer repo-local venv
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    # already in a venv
+    return 0
+  fi
+  if [[ -d "$SCRIPT_DIR/.venv" ]]; then
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/.venv/bin/activate"
+    return 0
+  fi
+  return 1
+}
 
+_bootstrap_env() {
+  [[ "$BOOTSTRAP" == "1" ]] || return 0
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[bootstrap] python3 not found; continuing without AST mode"
+    export HUMANIZE_AST=0
+    return 0
+  fi
+
+  if ! _activate_venv; then
+    echo "[bootstrap] creating repo-local venv: .venv"
+    python3 -m venv "$SCRIPT_DIR/.venv"
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/.venv/bin/activate"
+    python -m pip install --upgrade pip >/dev/null 2>&1 || true
+    python -m pip install --upgrade wheel >/dev/null 2>&1 || true
+  fi
+
+  # If requirements.txt provided, install it first (quietly).
+  if [[ -n "$REQUIREMENTS" && -f "$REQUIREMENTS" ]]; then
+    echo "[bootstrap] installing requirements from $REQUIREMENTS"
+    python -m pip install --no-cache-dir -r "$REQUIREMENTS"
+  fi
+
+  # Ensure needed packages
+  python - <<'PY' || true
+try:
+    import requests
+    import pycparser
+    print("ok")
+except Exception as e:
+    raise SystemExit(1)
+PY
+
+  if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then
+    echo "[bootstrap] installing requests + ${PIN_PYCC}"
+    python -m pip install --no-cache-dir requests "${PIN_PYCC}"
+  fi
+
+  # prefer AST renamer when available
+  python - <<'PY'
+import os, sys
+try:
+    import pycparser
+    print("AST=1")
+except Exception:
+    print("AST=0")
+PY
+
+  if grep -q "AST=1" <(python - <<'PY'
+try:
+    import pycparser; print("AST=1")
+except Exception:
+    print("AST=0")
+PY
+  ); then
+    export HUMANIZE_AST=1
+  else
+    export HUMANIZE_AST=0
+  fi
+}
+
+_bootstrap_env
+
+# ---------- logging + progress formatting ----------
 mkdir -p work/logs
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="work/logs/pipeline.${STAMP}.log"
@@ -52,7 +130,6 @@ _ts_filter_gawk() {
     }'
 }
 
-# smoother ETA without gawk: use shell for timestamps and awk for float math
 _ts_filter_sh() {
   local start_epoch="$1"
   while IFS= read -r line; do
@@ -61,7 +138,6 @@ _ts_filter_sh() {
       done=${BASH_REMATCH[2]}
       total=${BASH_REMATCH[3]}
       elapsed=$((now-start_epoch))
-      # floating rate using awk to avoid integer truncation
       rate=$(awk -v d="$done" -v e="$elapsed" 'BEGIN{ if (e>0) printf "%.6f", d/e; else print 0 }')
       remain=$(awk -v r="$rate" -v t="$total" -v d="$done" 'BEGIN{ if (r>0) printf "%.0f", (t-d)/r; else print -1 }')
       if (( remain >= 0 )); then
@@ -91,9 +167,17 @@ echo " Function Hunt → Humanize pipeline"
 echo " Timestamp:    $STAMP"
 echo " Log:          $LOG"
 echo " LLM:          $LLM_MODEL @ $LLM_ENDPOINT"
+echo " Bootstrap:    ${BOOTSTRAP} (venv: ${VIRTUAL_ENV:-none})"
+echo " HUMANIZE_AST: ${HUMANIZE_AST:-0}"
 echo "==============================================="
 
-# analyze / label (autodiscover target_out + resume + cache)
+# ---------- optional reset of prior run artifacts ----------
+if [[ "$RESET_RUN" == "1" ]]; then
+  rm -f work/hunt/functions.labeled.jsonl work/hunt/.progress
+  echo "[reset] cleared work/hunt/functions.labeled.jsonl and .progress"
+fi
+
+# ---------- analyze / label ----------
 AN_START=$(date +%s)
 stdbuf -oL -eL python3 tools/function_hunt/run_autodiscover.py | _ts_and_progress "$AN_START"
 
@@ -104,7 +188,7 @@ if [[ ! -s "$JSONL" ]]; then
 fi
 echo "[ok] mapping ready: $JSONL"
 
-# humanize stage
+# ---------- humanize stage ----------
 SRC_DIR="work/recovered_project/src"
 OUT_DIR="work/recovered_project_human"
 HU_START=$(date +%s)

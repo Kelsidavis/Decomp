@@ -31,8 +31,9 @@ if os.getenv("HUNT_CACHE_CLEAR", "0").lower() in ("1","true","yes","on"):
 
 VERBOSE_PER_FUNC = os.getenv("HUNT_LLM_VERBOSE", "0").lower() in ("1","true","yes","on")
 
-PROMPT = """You are a reverse-engineering assistant. Given evidence about ONE function,
-infer what it likely does. Return STRICT JSON ONLY with keys exactly:
+# ----- prompt: now includes module context & guidance; still returns same schema -----
+PROMPT = """You are a reverse-engineering assistant.
+Given evidence about ONE function, infer what it does and return STRICT JSON ONLY with keys:
 - name (string)
 - tags (array of strings)
 - inputs (array of strings)
@@ -41,14 +42,25 @@ infer what it likely does. Return STRICT JSON ONLY with keys exactly:
 - confidence (number 0..1)
 - evidence (array of strings)
 
-Return ONLY the JSON, no commentary.
+Style guidance for naming and interpretation:
+- Use descriptive, conventional names; avoid vendor-specific noise unless meaningful.
+- Consider module/file/subsystem context.
+- Derive preconditions/postconditions implicitly via inputs/outputs and side_effects.
+- If evidence suggests standard APIs (memcpy, crc32, win32 handle ops), tag accordingly.
 
-EVIDENCE:
-Imports: {imports}
-Strings: {strings}
-DecompiledSnippet:
+RICH EVIDENCE:
+Module: {module}
+Address: {addr}
+Size: {size}
+Callers: {callers}
+Callees: {callees}
+IAT (grouped): {iat_by_dll}
+String xrefs: {string_xrefs}
+CAPA hits: {capa_hits}
+YARA hits: {yara_hits}
+
+DecompiledSnippet (windowed):
 {snippet}
-Signals: {signals}
 """
 
 # -------------------- helpers --------------------
@@ -121,21 +133,57 @@ def _coerce_label(o: Dict[str, Any]) -> Dict[str, Any]:
     except Exception: o["confidence"] = 0.5
     return o
 
+def _short_list(xs, n=12):
+    xs = list(xs or [])
+    return xs[:n] + (["…"] if len(xs) > n else [])
+
+def _window_lines(s: str, min_lines: int, max_lines: int, max_chars: int) -> str:
+    if not s: return s
+    lines = s.splitlines()
+    n = min(max(len(lines), min_lines), max_lines)
+    w = "\n".join(lines[:n])
+    if len(w) > max_chars:
+        w = w[:max_chars]
+    return w
+
 def _trim_evidence(func: Dict[str, Any]) -> Dict[str, Any]:
-    imports = ", ".join([str(x) for x in (func.get("imports") or [])][:24])
-    strings_src = [s for s in (func.get("strings") or []) if "This program cannot be run in DOS mode" not in str(s)]
-    strings = ", ".join([str(x) for x in strings_src[:24]])
-    snippet = (func.get("snippet") or "")[:1000]
-    signals = json.dumps(func.get("signals", {}))[:800]
-    return {"imports": imports, "strings": strings, "snippet": snippet, "signals": signals}
+    max_chars  = int(os.getenv("MAX_PROMPT_CHARS", "6000"))
+    max_lines  = int(os.getenv("MAX_PROMPT_LINES", "80"))
+    min_lines  = int(os.getenv("MIN_PROMPT_LINES", "50"))
+
+    # pre-baked signals from run_autodiscover()
+    sig   = func.get("signals") or {}
+    mod   = sig.get("module") or ""
+    iat   = sig.get("iat_by_dll") or {}
+    xrefs = sig.get("string_xrefs") or []
+    capa  = sig.get("capa_hits") or []
+    yara  = sig.get("yara_hits") or []
+    callers = _short_list(sig.get("callers") or [])
+    callees = _short_list(sig.get("callees") or [])
+
+    snippet_raw = (func.get("snippet") or "")
+    snippet = _window_lines(snippet_raw, min_lines, max_lines, max_chars)
+
+    addr = func.get("address") or ""
+    size = func.get("size") or 0
+
+    return {
+        "module": mod, "addr": addr, "size": size,
+        "iat_by_dll": iat, "string_xrefs": _short_list(xrefs, 16),
+        "capa_hits": _short_list([c.get("rule","") for c in capa], 12),
+        "yara_hits": _short_list([y.get("rule","") for y in yara], 12),
+        "callers": callers, "callees": callees,
+        "snippet": snippet
+    }
 
 def _one_payload(f: Dict[str, Any], model: str, use_grammar: bool, use_respfmt: bool) -> Dict[str, Any]:
     ev = _trim_evidence(f)
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "Return ONLY valid JSON. Do NOT include chain-of-thought."},
-            {"role": "user",   "content": PROMPT.format(**ev)},
+            {"role": "system",
+             "content": "Return ONLY valid JSON. No chain-of-thought. Keys must match the required schema exactly."},
+            {"role": "user", "content": PROMPT.format(**ev)},
         ],
         "temperature": 0.2,
         "max_tokens": MAX_TOKENS,
@@ -163,19 +211,14 @@ ws             ::= [ \t\n\r]*
 '''
     return payload
 
-# -------------------- cache helpers (salted) --------------------
+# -------------------- cache helpers (salted by LLM settings) --------------------
 def _cache_key(f: Dict[str, Any], model: Optional[str] = None) -> str:
-    """
-    Salt key with model + token budget + prompt hash + flags
-    so changes to LLM settings invalidate old cache.
-    """
     model = model or LLM_MODEL
     addr    = str(f.get("address") or f.get("addr") or f.get("ea") or f.get("name") or "")
     imports = ",".join([str(x) for x in (f.get("imports") or [])])
     strings = ",".join([str(x) for x in (f.get("strings") or [])])
     snippet = f.get("snippet") or ""
     content_hash = hashlib.sha1("\n".join([addr, imports, strings, snippet]).encode("utf-8","ignore")).hexdigest()
-
     prompt_hash  = hashlib.sha1(PROMPT.encode("utf-8","ignore")).hexdigest()[:12]
     salt = f"{model}|tok{MAX_TOKENS}|g{int(PREFER_GRAMMAR)}|t{int(FORCE_TEXT)}|p{prompt_hash}"
     return hashlib.sha1(f"{salt}|{content_hash}".encode("utf-8","ignore")).hexdigest()

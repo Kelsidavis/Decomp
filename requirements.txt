@@ -1,15 +1,22 @@
-# Core
+# Core (used by label.py / reimplement.py / scripts)
 requests>=2.31.0
 PyYAML>=6.0
 tqdm>=4.66.0
 
-# Function Hunt enrichers
-yara-python>=4.5.0
-capa>=6.1.0   # or "floss" package if you want full FireEye capa tool
-
-# Parsing / source rewrite
+# Parsing / source rewrite (AST-safe humanization)
 pycparser>=2.22
 
-# Optional (for colored logging, debugging, etc.)
+# Function Hunt enrichers
+# If you call YARA from Python, keep this; if you only consume pre-made JSONL, you can omit.
+yara-python>=4.5.0
+
+# capa CLI is published on PyPI as "flare-capa" (not "capa").
+# Keep only if you plan to run capa via Python/CLI from this environment.
+flare-capa>=6.1.0
+
+# Optional: FLOSS (string deobfuscation) — PyPI name is "flare-floss"
+flare-floss>=2.2.0
+
+# Optional (for pretty logs)
 rich>=13.7.0
 
