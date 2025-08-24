@@ -1,33 +1,49 @@
 #!/usr/bin/env python3
-# tools/function_hunt/label.py
+# tools/function_hunt/label.py — robust labeling for OpenAI/llama.cpp-compatible endpoints
+# - Grammar OFF by default; fallback if response_format/grammar rejected
+# - Includes FLOSS configuration in cache key to avoid stale labels
+# - Extracts JSON from content, reasoning_content, or balanced braces
+
 from __future__ import annotations
 
-import os, re, json, time, random, hashlib, pathlib
+import os
+import re
+import json
+import time
+import hashlib
 from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import requests
 
+# ----------------------- Config -----------------------
 LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "")
 LLM_MODEL    = os.getenv("LLM_MODEL", "")
 
-MAX_TOKENS  = int(os.getenv("HUNT_LLM_MAX_TOKENS", "256"))
-CONCURRENCY = max(1, int(os.getenv("HUNT_LLM_CONCURRENCY", "6")))
-TIMEOUT_S   = int(os.getenv("HUNT_LLM_TIMEOUT", "60"))
-RETRIES     = int(os.getenv("HUNT_LLM_RETRIES", "2"))
+MAX_TOKENS   = int(os.getenv("HUNT_LLM_MAX_TOKENS", "256"))
+CONCURRENCY  = max(1, int(os.getenv("HUNT_LLM_CONCURRENCY", "6")))
+TIMEOUT_S    = int(os.getenv("HUNT_LLM_TIMEOUT", "60"))
+RETRIES      = int(os.getenv("HUNT_LLM_RETRIES", "2"))
 
+# Grammar off by default; instant models often fail on grammars.
 PREFER_GRAMMAR = os.getenv("HUNT_GRAMMAR", "0").lower() in ("1","true","yes","on")
-FORCE_TEXT     = os.getenv("HUNT_LLM_FORCE_TEXT", "0").lower() in ("1","true","yes","on")
+# Try json_object first; fallback to plain text if rejected by server.
+USE_RESPONSE_FORMAT = os.getenv("HUNT_LLM_JSON_MODE", "1").lower() in ("1","true","yes","on")
+# If set, skip response_format entirely (plain text)
+FORCE_TEXT          = os.getenv("HUNT_LLM_FORCE_TEXT", "0").lower() in ("1","true","yes","on")
 
-USE_CACHE = os.getenv("HUNT_CACHE", "0").lower() in ("1","true","yes","on")
-CACHE_DIR = pathlib.Path(os.getenv("HUNT_CACHE_DIR", "work/cache/labels"))
+USE_CACHE = os.getenv("HUNT_CACHE", "1").lower() in ("1","true","yes","on")
+CACHE_DIR = Path(os.getenv("HUNT_CACHE_DIR", "work/cache/labels"))
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 if os.getenv("HUNT_CACHE_CLEAR", "0").lower() in ("1","true","yes","on"):
-    if CACHE_DIR.exists():
-        for p in CACHE_DIR.glob("*.json"):
-            try: p.unlink()
-            except Exception: pass
+    for p in CACHE_DIR.glob("*.json"):
+        try: p.unlink()
+        except Exception: pass
 
 VERBOSE_PER_FUNC = os.getenv("HUNT_LLM_VERBOSE", "0").lower() in ("1","true","yes","on")
 
+# Small, strict but readable prompt. The function-specific evidence is formatted by _trim_evidence().
 PROMPT = """You are a reverse-engineering assistant.
 Given evidence about ONE function, infer what it does and return STRICT JSON ONLY with keys:
 - name (string)
@@ -38,18 +54,18 @@ Given evidence about ONE function, infer what it does and return STRICT JSON ONL
 - confidence (number 0..1)
 - evidence (array of strings)
 
-Style guidance:
-- Use descriptive, conventional names; consider module/file/subsystem context.
+Guidance:
+- Prefer descriptive, conventional names; consider module/file/subsystem context.
 - Derive pre/postconditions implicitly via inputs/outputs & side_effects.
-- If evidence suggests standard APIs (memcpy, crc32, Win32 handle ops), tag accordingly.
+- If evidence suggests standard APIs (memcpy, CRC32, Win32 handle ops), tag accordingly.
 
-RICH EVIDENCE:
+EVIDENCE
 Module: {module}
 Address: {addr}
 Size: {size}
 Callers: {callers}
 Callees: {callees}
-IAT (grouped): {iat_by_dll}
+IAT (by DLL): {iat_by_dll}
 String xrefs: {string_xrefs}
 FLOSS strings: {floss_strings}
 CAPA hits: {capa_hits}
@@ -59,13 +75,38 @@ DecompiledSnippet (windowed):
 {snippet}
 """
 
+# Optional JSON grammar for llama.cpp servers that support it
+GBNF_JSON = r'''
+root           ::= object
+object         ::= "{" ws members? ws "}"
+members        ::= pair ( ws "," ws pair )*
+pair           ::= string ws ":" ws value
+array          ::= "[" ws elements? ws "]"
+elements       ::= value ( ws "," ws value )*
+value          ::= string | number | object | array | "true" | "false" | "null"
+string         ::= "\"" chars "\""
+chars          ::= char*
+char           ::= [^"\\\u0000-\u001F] | "\\" ( ["\\/bfnrt] | "u" hex hex hex hex )
+hex            ::= [0-9a-fA-F]
+number         ::= "-"? int frac? exp?
+int            ::= "0" | [1-9][0-9]*
+frac           ::= "." [0-9]+
+exp            ::= [eE] [+\-]? [0-9]+
+ws             ::= [ \t\n\r]*
+'''
+
+# ----------------------- Utilities -----------------------
 def _extract_content(api_json: Dict[str, Any]) -> str:
-    ch = (api_json.get("choices") or [{}])[0]
+    ch  = (api_json.get("choices") or [{}])[0]
     msg = ch.get("message") or {}
     txt = (msg.get("content") or "").strip()
-    if txt: return txt
+    if txt:
+        return txt
     rc = (msg.get("reasoning_content") or "").strip()
-    if rc: return rc
+    if rc:
+        # Some servers stuff JSON into reasoning_content
+        return rc
+    # Some streaming servers use "text"
     return (ch.get("text") or "").strip()
 
 def _strip_code_fences(s: str) -> str:
@@ -81,7 +122,8 @@ def _extract_balanced_json(text: str) -> Optional[str]:
     depth = 0
     for i, ch in enumerate(text):
         if ch == "{":
-            if depth == 0: start = i
+            if depth == 0:
+                start = i
             depth += 1
         elif ch == "}":
             if depth > 0:
@@ -91,39 +133,41 @@ def _extract_balanced_json(text: str) -> Optional[str]:
     return None
 
 def _safe_json_loads(text: str) -> Optional[Dict[str, Any]]:
-    if not text: return None
+    if not text:
+        return None
+    # direct
     try: return json.loads(text)
     except Exception: pass
+    # code-fence
     try:
         cf = _strip_code_fences(text)
         if cf and cf != text:
             return json.loads(cf)
     except Exception: pass
+    # balanced braces
     try:
         bal = _extract_balanced_json(text)
-        if bal: return json.loads(bal)
+        if bal:
+            return json.loads(bal)
     except Exception: pass
     return None
 
+def _as_list(v) -> List[str]:
+    if v is None: return []
+    if isinstance(v, list): return [str(x)[:256] for x in v]
+    return [str(v)[:256]]
+
 def _coerce_label(o: Dict[str, Any]) -> Dict[str, Any]:
-    name = o.get("name", "unknown")
-    o["name"] = str(name)[:128] if name is not None else "unknown"
-
-    def _as_list(v):
-        if v is None: return []
-        if isinstance(v, list): return [str(x)[:256] for x in v]
-        return [str(v)[:256]]
-
+    name = o.get("name")
+    o["name"] = (str(name) if name is not None else "unknown")[:128]
     o["tags"]         = _as_list(o.get("tags"))
     o["inputs"]       = _as_list(o.get("inputs"))
     o["outputs"]      = _as_list(o.get("outputs"))
     o["side_effects"] = _as_list(o.get("side_effects"))
-
     ev = o.get("evidence")
     if isinstance(ev, list):   o["evidence"] = [str(x)[:512] for x in ev]
     elif ev is None:           o["evidence"] = []
     else:                      o["evidence"] = [str(ev)[:512]]
-
     try: o["confidence"] = float(o.get("confidence", 0.5))
     except Exception: o["confidence"] = 0.5
     return o
@@ -131,15 +175,6 @@ def _coerce_label(o: Dict[str, Any]) -> Dict[str, Any]:
 def _short_list(xs, n=12):
     xs = list(xs or [])
     return xs[:n] + (["…"] if len(xs) > n else [])
-
-def _window_lines(s: str, min_lines: int, max_lines: int, max_chars: int) -> str:
-    if not s: return s
-    lines = s.splitlines()
-    n = min(max(len(lines), min_lines), max_lines)
-    w = "\n".join(lines[:n])
-    if len(w) > max_chars:
-        w = w[:max_chars]
-    return w
 
 def _trim_evidence(func: Dict[str, Any]) -> Dict[str, Any]:
     max_chars  = int(os.getenv("MAX_PROMPT_CHARS", "6000"))
@@ -158,29 +193,34 @@ def _trim_evidence(func: Dict[str, Any]) -> Dict[str, Any]:
     callees = _short_list(sig.get("callees") or [])
 
     snippet_raw = (func.get("snippet") or "")
-    snippet = _window_lines(snippet_raw, min_lines, max_lines, max_chars)
+    # window snippet
+    lines = snippet_raw.splitlines()
+    n = min(max(len(lines), min_lines), max_lines)
+    w = "\n".join(lines[:n])
+    if len(w) > max_chars:
+        w = w[:max_chars]
 
-    addr = func.get("address") or ""
+    addr = func.get("address") or func.get("addr") or ""
     size = func.get("size") or 0
 
     return {
         "module": mod, "addr": addr, "size": size,
-        "iat_by_dll": iat, "string_xrefs": _short_list(xrefs, 16),
+        "iat_by_dll": iat,
+        "string_xrefs": _short_list(xrefs, 16),
         "floss_strings": _short_list(floss, 16),
         "capa_hits": _short_list([c.get("rule","") for c in capa], 12),
         "yara_hits": _short_list([y.get("rule","") for y in yara], 12),
         "callers": callers, "callees": callees,
-        "snippet": snippet
+        "snippet": w
     }
 
-def _one_payload(f: Dict[str, Any], model: str, use_grammar: bool, use_respfmt: bool) -> Dict[str, Any]:
-    ev = _trim_evidence(f)
-    payload = {
+def _payload_for(func: Dict[str, Any], model: str, use_grammar: bool, use_respfmt: bool) -> Dict[str, Any]:
+    ev = _trim_evidence(func)
+    payload: Dict[str, Any] = {
         "model": model,
         "messages": [
-            {"role": "system",
-             "content": "Return ONLY valid JSON. No chain-of-thought. Keys must match the required schema exactly."},
-            {"role": "user", "content": PROMPT.format(**ev)},
+            {"role": "system", "content": "Return ONLY valid JSON. No chain-of-thought."},
+            {"role": "user",   "content": PROMPT.format(**ev)},
         ],
         "temperature": 0.2,
         "max_tokens": MAX_TOKENS,
@@ -188,40 +228,37 @@ def _one_payload(f: Dict[str, Any], model: str, use_grammar: bool, use_respfmt: 
     if use_respfmt:
         payload["response_format"] = {"type": "json_object"}
     if use_grammar:
-        payload["grammar"] = r'''
-root           ::= object
-object         ::= "{" ws members? ws "}"
-members        ::= pair ( ws "," ws pair )*
-pair           ::= string ws ":" ws value
-array          ::= "[" ws elements? ws "]"
-elements       ::= value ( ws "," ws value )*
-value          ::= string | number | object | array | "true" | "false" | "null"
-string         ::= "\"" chars "\""
-chars          ::= char*
-char           ::= [^"\\\u0000-\u001F] | "\\" ( ["\\/bfnrt] | "u" hex hex hex hex )
-hex            ::= [0-9a-fA-F]
-number         ::= "-"? int frac? exp?
-int            ::= "0" | [1-9][0-9]*
-frac           ::= "." [0-9]+
-exp            ::= [eE] [+\-]? [0-9]+
-ws             ::= [ \t\n\r]* 
-'''
+        payload["grammar"] = GBNF_JSON
     return payload
 
-def _cache_key(f: Dict[str, Any], model: Optional[str] = None) -> str:
+# ----------------------- Cache -----------------------
+def _cache_key(func: Dict[str, Any], model: Optional[str] = None) -> str:
+    """Include FLOSS configuration + prompt hash to invalidate on env changes."""
     model = model or LLM_MODEL
-    addr    = str(f.get("address") or f.get("addr") or f.get("ea") or f.get("name") or "")
-    imports = ",".join([str(x) for x in (f.get("imports") or [])])
-    strings = ",".join([str(x) for x in (f.get("strings") or [])])
-    snippet = f.get("snippet") or ""
-    content_hash = hashlib.sha1("\n".join([addr, imports, strings, snippet]).encode("utf-8","ignore")).hexdigest()
+    # FLOSS config salt
+    floss_conf = {
+        "ENABLE_FLOSS": os.getenv("ENABLE_FLOSS", "1"),
+        "FLOSS_MINLEN": os.getenv("FLOSS_MINLEN", ""),
+        "FLOSS_ONLY": os.getenv("FLOSS_ONLY", ""),
+        "FLOSS_PER_FN": os.getenv("FLOSS_PER_FN", "20"),
+    }
+    # Function content signature
+    addr    = str(func.get("address") or func.get("addr") or "")
+    imports = ",".join([str(x) for x in (func.get("imports") or [])])
+    strings = ",".join([str(x) for x in (func.get("strings") or [])])
+    sig     = func.get("signals") or {}
+    floss_s = ",".join([str(x) for x in (sig.get("floss_strings") or [])])
+
+    snippet = func.get("snippet") or ""
     prompt_hash  = hashlib.sha1(PROMPT.encode("utf-8","ignore")).hexdigest()[:12]
-    salt = f"{model}|tok{MAX_TOKENS}|g{int(PREFER_GRAMMAR)}|t{int(FORCE_TEXT)}|p{prompt_hash}"
-    return hashlib.sha1(f"{salt}|{content_hash}".encode("utf-8","ignore")).hexdigest()
+    cfg_salt = f"{model}|tok{MAX_TOKENS}|g{int(PREFER_GRAMMAR)}|json{int(USE_RESPONSE_FORMAT and not FORCE_TEXT)}|p{prompt_hash}"
+    h = hashlib.sha1()
+    for part in (cfg_salt, addr, imports, strings, floss_s, snippet, json.dumps(floss_conf, sort_keys=True)):
+        h.update(part.encode("utf-8","ignore"))
+    return h.hexdigest()
 
 def _cache_load(key: str) -> Optional[Dict[str, Any]]:
     if not USE_CACHE: return None
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     p = CACHE_DIR / f"{key}.json"
     if not p.exists(): return None
     try: return json.loads(p.read_text(encoding="utf-8", errors="ignore"))
@@ -229,29 +266,29 @@ def _cache_load(key: str) -> Optional[Dict[str, Any]]:
 
 def _cache_save(key: str, obj: Dict[str, Any]) -> None:
     if not USE_CACHE: return
-    try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        (CACHE_DIR / f"{key}.json").write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+    try: (CACHE_DIR / f"{key}.json").write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
     except Exception: pass
 
-def _call_llm(sess: requests.Session, endpoint: str, model: str, f: Dict[str, Any]) -> Dict[str, Any]:
+# ----------------------- LLM Call -----------------------
+def _call_llm(sess: requests.Session, endpoint: str, model: str, func: Dict[str, Any]) -> Dict[str, Any]:
     use_grammar = PREFER_GRAMMAR
-    use_respfmt = not FORCE_TEXT
+    use_respfmt = (USE_RESPONSE_FORMAT and not FORCE_TEXT)
 
     last_err: Optional[Exception] = None
     for attempt in range(RETRIES + 1):
         try:
-            payload = _one_payload(f, model, use_grammar, use_respfmt)
+            payload = _payload_for(func, model, use_grammar, use_respfmt)
             r = sess.post(endpoint, json=payload, timeout=TIMEOUT_S)
             if not r.ok:
                 body_lower = (r.text or "").lower()
-                if (r.status_code in (400,422)) and "grammar" in body_lower and use_grammar:
-                    print("[llm] disabling grammar and retrying…", flush=True)
-                    use_grammar = False
-                    continue
-                if (r.status_code in (400,422)) and "response_format" in body_lower and use_respfmt:
+                # If server rejects response_format or grammar, turn them off and retry
+                if (r.status_code in (400, 422)) and "response_format" in body_lower and use_respfmt:
                     print("[llm] disabling response_format and retrying…", flush=True)
                     use_respfmt = False
+                    continue
+                if (r.status_code in (400, 422)) and "grammar" in body_lower and use_grammar:
+                    print("[llm] disabling grammar and retrying…", flush=True)
+                    use_grammar = False
                     continue
                 r.raise_for_status()
 
@@ -260,26 +297,29 @@ def _call_llm(sess: requests.Session, endpoint: str, model: str, f: Dict[str, An
             obj  = _safe_json_loads(txt)
             if obj is None:
                 obj = {
-                    "name": f.get("name","unknown"), "tags": [], "inputs": [], "outputs": [],
-                    "side_effects": [], "confidence": 0.3,
+                    "name": func.get("name","unknown"),
+                    "tags": [], "inputs": [], "outputs": [], "side_effects": [],
+                    "confidence": 0.3,
                     "evidence": [f"invalid JSON from model (first 160): {txt[:160]}"],
                 }
             obj = _coerce_label(obj)
-            obj["_addr"]      = f.get("address")
-            obj["_orig_name"] = f.get("name")
+            obj["_addr"]      = func.get("address")
+            obj["_orig_name"] = func.get("name")
             return obj
 
         except Exception as e:
             last_err = e
-            time.sleep(0.8 * (attempt + 1) + random.uniform(0, 0.4))
+            time.sleep(0.6 * (attempt + 1))
 
+    # Final fallback
     return _coerce_label({
-        "name": f.get("name","unknown"),
+        "name": func.get("name","unknown"),
         "tags": [], "inputs": [], "outputs": [], "side_effects": [],
         "confidence": 0.3, "evidence": [f"llm error: {str(last_err)[:160]}"],
-        "_addr": f.get("address"), "_orig_name": f.get("name"),
+        "_addr": func.get("address"), "_orig_name": func.get("name"),
     })
 
+# ----------------------- Public API -----------------------
 def llm_label_one(func: Dict[str, Any], endpoint: Optional[str], model: Optional[str]) -> Dict[str, Any]:
     if not endpoint or not model:
         return _coerce_label({
@@ -317,7 +357,7 @@ def llm_label_batch(funcs: List[Dict[str, Any]], endpoint: Optional[str], model:
     sess = requests.Session()
     out: List[Optional[Dict[str, Any]]] = [None] * total
 
-    def work(idx_f: Tuple[int, Dict[str, Any]]):
+    def work(idx_f):
         i, f = idx_f
         if VERBOSE_PER_FUNC:
             nm = f.get("name") or f.get("address") or "sub_unknown"
@@ -340,6 +380,7 @@ def llm_label_batch(funcs: List[Dict[str, Any]], endpoint: Optional[str], model:
             if (done % every == 0) or (done == total):
                 print(f"[llm] progress {done}/{total}", flush=True)
 
+    # fill any holes
     for i in range(len(out)):
         if out[i] is None:
             f = funcs[i]
@@ -353,20 +394,5 @@ def llm_label_batch(funcs: List[Dict[str, Any]], endpoint: Optional[str], model:
 
 if __name__ == "__main__":
     import sys
-    def load_funcs(path: Optional[str]):
-        items = []
-        fh = open(path, "r", encoding="utf-8") if path else sys.stdin
-        for ln in fh:
-            ln = ln.strip()
-            if not ln: continue
-            try: items.append(json.loads(ln))
-            except Exception: pass
-        if path: fh.close()
-        return items
-
-    path = sys.argv[1] if len(sys.argv) > 1 else None
-    funcs = load_funcs(path)
-    labeled = llm_label_batch(funcs, LLM_ENDPOINT, LLM_MODEL)
-    for rec in labeled:
-        print(json.dumps(rec, ensure_ascii=False))
+    print("This module is used by run_autodiscover.py")
 

@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
-# tools/function_hunt/run_autodiscover.py
+# tools/function_hunt/run_autodiscover.py — autodetect inputs, FLOSS enrich, label, and write mapping
 from __future__ import annotations
-import os, sys, json, time, re, pathlib, subprocess, shlex
-from typing import List, Dict, Any, Set, Optional, Tuple
+
+import os
+import re
+import json
+import shlex
+import subprocess
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-WORK      = pathlib.Path(os.getenv("WORK_DIR", "work"))
+# local imports
+from label import llm_label_batch
+
+WORK      = Path(os.getenv("WORK_DIR", "work"))
 HUNT_DIR  = WORK / "hunt"
 HUNT_DIR.mkdir(parents=True, exist_ok=True)
 MAPPING   = HUNT_DIR / "functions.labeled.jsonl"
-PROGRESS  = HUNT_DIR / ".progress"
 
 LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "")
 LLM_MODEL    = os.getenv("LLM_MODEL", "")
@@ -21,10 +29,10 @@ HUNT_MIN_SIZE = int(os.getenv("HUNT_MIN_SIZE","0"))
 
 # FLOSS controls
 ENABLE_FLOSS   = os.getenv("ENABLE_FLOSS", "1").lower() in ("1","true","yes","on")
-FLOSS_OUT      = pathlib.Path(os.getenv("FLOSS_OUT", str(HUNT_DIR / "floss.json")))
+FLOSS_OUT      = Path(os.getenv("FLOSS_OUT", str(HUNT_DIR / "floss.json")))
 FLOSS_MINLEN   = os.getenv("FLOSS_MINLEN", "")
 FLOSS_ONLY     = os.getenv("FLOSS_ONLY", "")            # e.g. "decoded stack tight"
-FLOSS_ARGS_RAW = os.getenv("FLOSS_ARGS", "")            # extra raw args (split via shlex)
+FLOSS_ARGS_RAW = os.getenv("FLOSS_ARGS", "")            # extra raw args
 FLOSS_PER_FN   = max(1, int(os.getenv("FLOSS_PER_FN", "20")))
 FLOSS_FORCE    = os.getenv("FLOSS_FORCE", "0").lower() in ("1","true","yes","on")
 
@@ -33,15 +41,16 @@ MAX_PROMPT_LINES = int(os.getenv("MAX_PROMPT_LINES", "80"))
 MIN_PROMPT_LINES = int(os.getenv("MIN_PROMPT_LINES", "50"))
 
 BIN_EXTS = (".exe", ".dll", ".bin", ".elf", ".so", ".dylib", "")
+
 JSON_PATTERNS = (
     "_out.json", "-out.json", ".out.json", ".target_out.json", "target_out.json",
     "target_out.ndjson", "analysis.json"
 )
 
-# Import labeler here to avoid cycles
-from label import llm_label_one
+# -------------------- helpers --------------------
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
-# ------------------ helpers ------------------
 def _parse_hex(addr: Any) -> Optional[int]:
     if addr is None: return None
     if isinstance(addr, int): return addr
@@ -65,64 +74,17 @@ def _group_iat(imports: List[str]) -> Dict[str, List[str]]:
     out: Dict[str, List[str]] = {}
     for imp in imports or []:
         dll, sym = None, None
-        if "!" in imp:
-            dll, sym = imp.split("!", 1)
-        elif "." in imp:
-            dll, sym = imp.split(".", 1)
-        else:
-            dll, sym = "unknown", imp
+        if "!" in imp: dll, sym = imp.split("!", 1)
+        elif "." in imp: dll, sym = imp.split(".", 1)
+        else: dll, sym = "unknown", imp
         dll = dll.replace(".dll", "").upper()
         out.setdefault(dll, [])
         if sym not in out[dll]:
             out[dll].append(sym)
     return out
 
-def _load_jsonl(path: pathlib.Path) -> List[Dict[str,Any]]:
-    if not path or not path.exists(): return []
-    out = []
-    with path.open("r", encoding="utf-8", errors="ignore") as fh:
-        for ln in fh:
-            ln = ln.strip()
-            if not ln: continue
-            try: out.append(json.loads(ln))
-            except Exception: pass
-    return out
-
-def _load_hits() -> Tuple[List[Dict[str,Any]], List[Dict[str,Any]]]:
-    candidates = [
-        WORK / "capa.jsonl", WORK / "capa.ndjson", HUNT_DIR / "capa.jsonl", HUNT_DIR / "capa.ndjson",
-    ]
-    capah = []
-    for c in candidates:
-        capah.extend(_load_jsonl(c))
-
-    ycand = [WORK / "yara.jsonl", HUNT_DIR / "yara.jsonl"]
-    yarah = []
-    for c in ycand:
-        yarah.extend(_load_jsonl(c))
-    return capah, yarah
-
-def _hits_for_range(hits: List[Dict[str,Any]], start: int, size: int) -> List[Dict[str,Any]]:
-    if start is None or size is None: return []
-    end = start + max(0, size)
-    out = []
-    for h in hits or []:
-        ha = _parse_hex(h.get("addr") or h.get("start") or h.get("offset"))
-        he = _parse_hex(h.get("end"))
-        if ha is None and he is None:
-            continue
-        if he is None: he = ha
-        if ha is None: ha = he
-        if ha is None or he is None: continue
-        if (ha >= start and ha < end) or (he > start and he <= end) or (ha <= start and he >= end):
-            out.append(h)
-    return out
-
-def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", s.lower())
-
-def _best_binary(work_dir: pathlib.Path) -> Optional[pathlib.Path]:
-    cands: List[pathlib.Path] = []
+def _best_binary(work_dir: Path) -> Optional[Path]:
+    cands: List[Path] = []
     for p in work_dir.iterdir():
         if not p.is_file(): continue
         if p.suffix.lower() in BIN_EXTS:
@@ -131,9 +93,9 @@ def _best_binary(work_dir: pathlib.Path) -> Optional[pathlib.Path]:
     cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return cands[0]
 
-def _best_target_out(work_dir: pathlib.Path, bin_path: Optional[pathlib.Path]) -> Optional[pathlib.Path]:
+def _best_target_out(work_dir: Path, bin_path: Optional[Path]) -> Optional[Path]:
     stem = _norm(bin_path.stem) if bin_path else ""
-    exacts: List[pathlib.Path] = []
+    exacts: List[Path] = []
     for suffix in JSON_PATTERNS:
         if bin_path:
             p = work_dir / f"{bin_path.stem}{suffix}"
@@ -146,7 +108,7 @@ def _best_target_out(work_dir: pathlib.Path, bin_path: Optional[pathlib.Path]) -
     loose = [p for p in work_dir.glob("*") if p.is_file() and p.suffix.lower()==".json" and "out" in p.name.lower()]
     if not loose: return None
 
-    def score(p: pathlib.Path):
+    def score(p: Path):
         s = 0
         base_norm = _norm(re.sub(r"(?:[_\-.]?target)?[_\-.]?out$", "", p.stem))
         if stem and base_norm == stem: s += 10
@@ -157,7 +119,7 @@ def _best_target_out(work_dir: pathlib.Path, bin_path: Optional[pathlib.Path]) -
     loose.sort(key=score, reverse=True)
     return loose[0] if loose else None
 
-def _read_jsonl_or_json(path: pathlib.Path) -> Any:
+def _read_jsonl_or_json(path: Path) -> Any:
     text = path.read_text(encoding="utf-8", errors="ignore").strip()
     if not text: return None
     try: return json.loads(text)
@@ -176,18 +138,15 @@ def _string_xrefs(func: Dict[str,Any]) -> List[str]:
         return list(dict.fromkeys([str(x) for x in s]))[:32]
     return list(dict.fromkeys([str(x) for x in (func.get("strings") or [])]))[:32]
 
-# ------------------ FLOSS integration ------------------
-def _run_floss(bin_path: pathlib.Path) -> None:
-    if not ENABLE_FLOSS:
-        return
+# -------------------- FLOSS --------------------
+def _run_floss(bin_path: Path) -> None:
+    if not ENABLE_FLOSS: return
     if FLOSS_OUT.exists() and not FLOSS_FORCE:
-        # already present
         return
     args = ["floss", "-j", "-v"]
     if FLOSS_MINLEN:
         args += ["-n", str(FLOSS_MINLEN)]
     if FLOSS_ONLY:
-        # e.g. "decoded stack tight" -> ["--only","decoded","stack","tight","--"]
         args += ["--only"] + FLOSS_ONLY.split() + ["--"]
     extra = shlex.split(FLOSS_ARGS_RAW) if FLOSS_ARGS_RAW else []
     args += extra
@@ -200,14 +159,11 @@ def _run_floss(bin_path: pathlib.Path) -> None:
     except FileNotFoundError:
         print("[floss] not installed (flare-floss). Skipping decoded strings.")
     except subprocess.CalledProcessError as e:
-        print(f"[floss] error (exit {e.returncode}). stderr:\n{e.stderr[:4000]}")
+        print(f"[floss] error (exit {e.returncode}). stderr:\n{(e.stderr or '')[:2000]}")
     except Exception as e:
         print(f"[floss] error: {e}")
 
-def _load_floss_pairs(path: pathlib.Path) -> List[Tuple[int,str]]:
-    """
-    Return list of (va, string). Handle several FLOSS JSON shapes.
-    """
+def _load_floss_pairs(path: Path) -> List[Tuple[int,str]]:
     pairs: List[Tuple[int,str]] = []
     if not path.exists(): return pairs
     try:
@@ -215,9 +171,8 @@ def _load_floss_pairs(path: pathlib.Path) -> List[Tuple[int,str]]:
     except Exception:
         return pairs
 
-    # FLOSS variants
     buckets = []
-    for k in ("strings", "decoded_strings", "stack_strings", "tight_strings"):
+    for k in ("strings","decoded_strings", "stack_strings", "tight_strings"):
         v = data.get(k)
         if isinstance(v, list): buckets.append(v)
 
@@ -235,23 +190,16 @@ def _load_floss_pairs(path: pathlib.Path) -> List[Tuple[int,str]]:
     return pairs
 
 def _attach_floss(funcs: List[Dict[str,Any]], floss_pairs: List[Tuple[int,str]], max_per_fn: int = 20) -> None:
-    """
-    Mutates funcs: for each function (start..end) attach strings into signals['floss_strings'].
-    """
     if not floss_pairs: return
-    # prepare function ranges
+    # prepare ranges
     ranges = []
     for f in funcs:
-        start = _parse_hex(f.get("address"))
+        start = _parse_hex(f.get("address") or f.get("addr"))
         size  = f.get("size") or 0
         end   = (start or 0) + (size or 0)
-        f["_start"] = start
-        f["_end"]   = end
+        if start is None: continue
         ranges.append((start, end, f))
-    ranges = [r for r in ranges if r[0] is not None]
     ranges.sort(key=lambda x: x[0])
-
-    # binary search by start address
     starts = [r[0] for r in ranges]
 
     import bisect
@@ -259,7 +207,7 @@ def _attach_floss(funcs: List[Dict[str,Any]], floss_pairs: List[Tuple[int,str]],
         i = bisect.bisect_right(starts, va) - 1
         if 0 <= i < len(ranges):
             start, end, f = ranges[i]
-            if start is not None and start <= va < end:
+            if start <= va < end:
                 sig = f.setdefault("signals", {})
                 lst = sig.setdefault("floss_strings", [])
                 if s not in lst:
@@ -267,8 +215,8 @@ def _attach_floss(funcs: List[Dict[str,Any]], floss_pairs: List[Tuple[int,str]],
                     if len(lst) > max_per_fn:
                         del lst[0:len(lst)-max_per_fn]
 
-# ------------------ load/normalize funcs ------------------
-def load_functions(target_out: pathlib.Path, module_name: str) -> List[Dict[str, Any]]:
+# -------------------- load/normalize funcs --------------------
+def load_functions(target_out: Path, module_name: str) -> List[Dict[str, Any]]:
     if not target_out or not target_out.exists():
         print(f"[hunt] WARNING: target_out missing: {target_out}")
         return []
@@ -308,7 +256,6 @@ def load_functions(target_out: pathlib.Path, module_name: str) -> List[Dict[str,
             "string_xrefs": xrefs,
             "callers": callers, "callees": callees,
         }
-
         norm.append({
             "address": addr,
             "name": str(name),
@@ -316,11 +263,11 @@ def load_functions(target_out: pathlib.Path, module_name: str) -> List[Dict[str,
             "snippet": snippet,
             "imports": imports[:200] if isinstance(imports, list) else [],
             "strings": strings[:200] if isinstance(strings, list) else [],
-            "signals": sig
+            "signals": sig,
         })
     return norm
 
-# ------------------ main ------------------
+# -------------------- main --------------------
 def main() -> int:
     bin_path = _best_binary(WORK)
     tout     = _best_target_out(WORK, bin_path)
@@ -339,18 +286,6 @@ def main() -> int:
         pairs = _load_floss_pairs(FLOSS_OUT)
         _attach_floss(funcs, pairs, max_per_fn=FLOSS_PER_FN)
 
-    # CAPA/YARA enrich
-    capah, yarah = _load_hits()
-    if capah or yarah:
-        for f in funcs:
-            start = _parse_hex(f.get("address"))
-            size  = f.get("size") or 0
-            if start is None: continue
-            capa_hits = _hits_for_range(capah, start, size)
-            yara_hits = _hits_for_range(yarah, start, size)
-            f["signals"].setdefault("capa_hits", capa_hits)
-            f["signals"].setdefault("yara_hits", yara_hits)
-
     # Filters
     if HUNT_MIN_SIZE:
         before = len(funcs)
@@ -363,52 +298,32 @@ def main() -> int:
         funcs = funcs[:HUNT_LIMIT]
         print(f"[hunt] limiting to {HUNT_LIMIT} (HUNT_LIMIT)")
     print(f"[hunt] functions normalized: {len(funcs)}")
+
+    # LLM batch
     print(f"[hunt] starting llm_label_batch()…")
+    labeled = llm_label_batch(funcs, LLM_ENDPOINT, LLM_MODEL)
+    print(f"[hunt] llm_label_batch() done")
 
-    # Resume: skip already-labeled
-    done = set()
-    if MAPPING.exists():
-        with MAPPING.open("r", encoding="utf-8", errors="ignore") as fh:
-            for ln in fh:
-                try:
-                    o = json.loads(ln)
-                except Exception:
-                    continue
-                k = str(o.get("_addr") or o.get("_orig_name") or o.get("name") or "")
-                if k: done.add(k)
-    if done:
-        before = len(funcs)
-        funcs = [f for f in funcs if str(f.get("address") or f.get("name")) not in done]
-        print(f"[hunt] resume: skipping already labeled → {before - len(funcs)} skipped")
-
-    total = len(funcs)
-    if total == 0:
-        if not MAPPING.exists(): MAPPING.touch()
-        print("[hunt] nothing to label.")
-        return 0
-
-    processed = 0
-    every = max(5, total // 20)
-
-    def work(item: Tuple[int, Dict[str, Any]]):
-        i, f = item
-        rec = llm_label_one(f, LLM_ENDPOINT, LLM_MODEL)
-        return i, rec
-
-    from label import _coerce_label  # for type hints only
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as ex, MAPPING.open("a", encoding="utf-8") as out:
-        futs = {ex.submit(work, (i, f)): i for i, f in enumerate(funcs)}
-        for k, fut in enumerate(as_completed(futs), 1):
-            _, rec = fut.result()
+    # Write mapping
+    with MAPPING.open("w", encoding="utf-8") as out:
+        for rec in labeled:
             out.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            out.flush()
-            processed += 1
-            PROGRESS.write_text(str(processed), encoding="utf-8")
-            if (k % every == 0) or (k == total):
-                print(f"[llm] progress {k}/{total}")
-    print("[hunt] llm_label_batch() done")
+    print(f"[hunt] wrote {MAPPING}")
+
+    # (Optional) lightweight report
+    try:
+        report_md = HUNT_DIR / "report.md"
+        with report_md.open("w", encoding="utf-8") as w:
+            w.write(f"# Function Hunt Report\n\nTotal labeled: {len(labeled)}\n\n")
+            for r in labeled[:100]:
+                w.write(f"- `{r.get('_addr')}` **{r.get('name','unknown')}** (conf {r.get('confidence',0):.2f})\n")
+        print(f"[hunt] wrote {report_md}")
+    except Exception:
+        pass
+
     return 0
 
 if __name__ == "__main__":
+    import sys
     sys.exit(main())
 
