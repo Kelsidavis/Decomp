@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
-# -------------------- env & defaults --------------------
 LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "")
 LLM_MODEL    = os.getenv("LLM_MODEL", "")
 
@@ -16,11 +15,9 @@ CONCURRENCY = max(1, int(os.getenv("HUNT_LLM_CONCURRENCY", "6")))
 TIMEOUT_S   = int(os.getenv("HUNT_LLM_TIMEOUT", "60"))
 RETRIES     = int(os.getenv("HUNT_LLM_RETRIES", "2"))
 
-# llama.cpp compatibility
 PREFER_GRAMMAR = os.getenv("HUNT_GRAMMAR", "0").lower() in ("1","true","yes","on")
 FORCE_TEXT     = os.getenv("HUNT_LLM_FORCE_TEXT", "0").lower() in ("1","true","yes","on")
 
-# Cache controls
 USE_CACHE = os.getenv("HUNT_CACHE", "0").lower() in ("1","true","yes","on")
 CACHE_DIR = pathlib.Path(os.getenv("HUNT_CACHE_DIR", "work/cache/labels"))
 if os.getenv("HUNT_CACHE_CLEAR", "0").lower() in ("1","true","yes","on"):
@@ -31,7 +28,6 @@ if os.getenv("HUNT_CACHE_CLEAR", "0").lower() in ("1","true","yes","on"):
 
 VERBOSE_PER_FUNC = os.getenv("HUNT_LLM_VERBOSE", "0").lower() in ("1","true","yes","on")
 
-# ----- prompt: now includes module context & guidance; still returns same schema -----
 PROMPT = """You are a reverse-engineering assistant.
 Given evidence about ONE function, infer what it does and return STRICT JSON ONLY with keys:
 - name (string)
@@ -42,11 +38,10 @@ Given evidence about ONE function, infer what it does and return STRICT JSON ONL
 - confidence (number 0..1)
 - evidence (array of strings)
 
-Style guidance for naming and interpretation:
-- Use descriptive, conventional names; avoid vendor-specific noise unless meaningful.
-- Consider module/file/subsystem context.
-- Derive preconditions/postconditions implicitly via inputs/outputs and side_effects.
-- If evidence suggests standard APIs (memcpy, crc32, win32 handle ops), tag accordingly.
+Style guidance:
+- Use descriptive, conventional names; consider module/file/subsystem context.
+- Derive pre/postconditions implicitly via inputs/outputs & side_effects.
+- If evidence suggests standard APIs (memcpy, crc32, Win32 handle ops), tag accordingly.
 
 RICH EVIDENCE:
 Module: {module}
@@ -56,6 +51,7 @@ Callers: {callers}
 Callees: {callees}
 IAT (grouped): {iat_by_dll}
 String xrefs: {string_xrefs}
+FLOSS strings: {floss_strings}
 CAPA hits: {capa_hits}
 YARA hits: {yara_hits}
 
@@ -63,7 +59,6 @@ DecompiledSnippet (windowed):
 {snippet}
 """
 
-# -------------------- helpers --------------------
 def _extract_content(api_json: Dict[str, Any]) -> str:
     ch = (api_json.get("choices") or [{}])[0]
     msg = ch.get("message") or {}
@@ -151,13 +146,14 @@ def _trim_evidence(func: Dict[str, Any]) -> Dict[str, Any]:
     max_lines  = int(os.getenv("MAX_PROMPT_LINES", "80"))
     min_lines  = int(os.getenv("MIN_PROMPT_LINES", "50"))
 
-    # pre-baked signals from run_autodiscover()
     sig   = func.get("signals") or {}
     mod   = sig.get("module") or ""
     iat   = sig.get("iat_by_dll") or {}
     xrefs = sig.get("string_xrefs") or []
     capa  = sig.get("capa_hits") or []
     yara  = sig.get("yara_hits") or []
+    floss = sig.get("floss_strings") or []
+
     callers = _short_list(sig.get("callers") or [])
     callees = _short_list(sig.get("callees") or [])
 
@@ -170,6 +166,7 @@ def _trim_evidence(func: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "module": mod, "addr": addr, "size": size,
         "iat_by_dll": iat, "string_xrefs": _short_list(xrefs, 16),
+        "floss_strings": _short_list(floss, 16),
         "capa_hits": _short_list([c.get("rule","") for c in capa], 12),
         "yara_hits": _short_list([y.get("rule","") for y in yara], 12),
         "callers": callers, "callees": callees,
@@ -211,7 +208,6 @@ ws             ::= [ \t\n\r]*
 '''
     return payload
 
-# -------------------- cache helpers (salted by LLM settings) --------------------
 def _cache_key(f: Dict[str, Any], model: Optional[str] = None) -> str:
     model = model or LLM_MODEL
     addr    = str(f.get("address") or f.get("addr") or f.get("ea") or f.get("name") or "")
@@ -238,7 +234,6 @@ def _cache_save(key: str, obj: Dict[str, Any]) -> None:
         (CACHE_DIR / f"{key}.json").write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
     except Exception: pass
 
-# -------------------- LLM core --------------------
 def _call_llm(sess: requests.Session, endpoint: str, model: str, f: Dict[str, Any]) -> Dict[str, Any]:
     use_grammar = PREFER_GRAMMAR
     use_respfmt = not FORCE_TEXT
@@ -285,7 +280,6 @@ def _call_llm(sess: requests.Session, endpoint: str, model: str, f: Dict[str, An
         "_addr": f.get("address"), "_orig_name": f.get("name"),
     })
 
-# Public APIs
 def llm_label_one(func: Dict[str, Any], endpoint: Optional[str], model: Optional[str]) -> Dict[str, Any]:
     if not endpoint or not model:
         return _coerce_label({
