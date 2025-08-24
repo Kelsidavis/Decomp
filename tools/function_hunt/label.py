@@ -104,9 +104,7 @@ def _extract_content(api_json: Dict[str, Any]) -> str:
         return txt
     rc = (msg.get("reasoning_content") or "").strip()
     if rc:
-        # Some servers stuff JSON into reasoning_content
         return rc
-    # Some streaming servers use "text"
     return (ch.get("text") or "").strip()
 
 def _strip_code_fences(s: str) -> str:
@@ -135,16 +133,13 @@ def _extract_balanced_json(text: str) -> Optional[str]:
 def _safe_json_loads(text: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
-    # direct
     try: return json.loads(text)
     except Exception: pass
-    # code-fence
     try:
         cf = _strip_code_fences(text)
         if cf and cf != text:
             return json.loads(cf)
     except Exception: pass
-    # balanced braces
     try:
         bal = _extract_balanced_json(text)
         if bal:
@@ -193,7 +188,6 @@ def _trim_evidence(func: Dict[str, Any]) -> Dict[str, Any]:
     callees = _short_list(sig.get("callees") or [])
 
     snippet_raw = (func.get("snippet") or "")
-    # window snippet
     lines = snippet_raw.splitlines()
     n = min(max(len(lines), min_lines), max_lines)
     w = "\n".join(lines[:n])
@@ -235,14 +229,12 @@ def _payload_for(func: Dict[str, Any], model: str, use_grammar: bool, use_respfm
 def _cache_key(func: Dict[str, Any], model: Optional[str] = None) -> str:
     """Include FLOSS configuration + prompt hash to invalidate on env changes."""
     model = model or LLM_MODEL
-    # FLOSS config salt
     floss_conf = {
         "ENABLE_FLOSS": os.getenv("ENABLE_FLOSS", "1"),
         "FLOSS_MINLEN": os.getenv("FLOSS_MINLEN", ""),
         "FLOSS_ONLY": os.getenv("FLOSS_ONLY", ""),
         "FLOSS_PER_FN": os.getenv("FLOSS_PER_FN", "20"),
     }
-    # Function content signature
     addr    = str(func.get("address") or func.get("addr") or "")
     imports = ",".join([str(x) for x in (func.get("imports") or [])])
     strings = ",".join([str(x) for x in (func.get("strings") or [])])
@@ -281,7 +273,6 @@ def _call_llm(sess: requests.Session, endpoint: str, model: str, func: Dict[str,
             r = sess.post(endpoint, json=payload, timeout=TIMEOUT_S)
             if not r.ok:
                 body_lower = (r.text or "").lower()
-                # If server rejects response_format or grammar, turn them off and retry
                 if (r.status_code in (400, 422)) and "response_format" in body_lower and use_respfmt:
                     print("[llm] disabling response_format and retrying…", flush=True)
                     use_respfmt = False
@@ -311,7 +302,6 @@ def _call_llm(sess: requests.Session, endpoint: str, model: str, func: Dict[str,
             last_err = e
             time.sleep(0.6 * (attempt + 1))
 
-    # Final fallback
     return _coerce_label({
         "name": func.get("name","unknown"),
         "tags": [], "inputs": [], "outputs": [], "side_effects": [],
@@ -380,7 +370,6 @@ def llm_label_batch(funcs: List[Dict[str, Any]], endpoint: Optional[str], model:
             if (done % every == 0) or (done == total):
                 print(f"[llm] progress {done}/{total}", flush=True)
 
-    # fill any holes
     for i in range(len(out)):
         if out[i] is None:
             f = funcs[i]
@@ -393,6 +382,5 @@ def llm_label_batch(funcs: List[Dict[str, Any]], endpoint: Optional[str], model:
     return [x for x in out if x is not None]
 
 if __name__ == "__main__":
-    import sys
     print("This module is used by run_autodiscover.py")
 

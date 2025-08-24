@@ -2,21 +2,32 @@
 # humanize.sh — analyze + humanize with logging, cache/resume, ETA, and env bootstrap
 set -euo pipefail
 
+# ---- LLM defaults ----
 : "${LLM_ENDPOINT:=http://127.0.0.1:8080/v1/chat/completions}"
 : "${LLM_MODEL:=Qwen3-14B-UD-Q5_K_XL.gguf}"
 : "${HUNT_LLM_CONCURRENCY:=6}"
 : "${HUNT_LLM_MAX_TOKENS:=224}"
+
+# ---- Hunt selection ----
 : "${HUNT_MIN_SIZE:=0}"
 : "${HUNT_TOPN:=1000}"
 : "${HUNT_CACHE:=1}"
+: "${HUNT_RESUME:=1}"         # <— auto-resume ON by default
 
-# FLOSS visibility (execution happens inside run_autodiscover.py)
+# ---- Static analysis controls (ON by default) ----
+: "${ENABLE_CAPA:=1}"         # <— CAPA ON
+: "${CAPA_ARGS:=-j -v}"
+: "${ENABLE_YARA:=1}"         # <— YARA ON
+: "${YARA_RULES:=rules/yara}" # dir with .yar/.yara rules (ok if missing; tool will warn and continue)
+
+# ---- FLOSS visibility (execution happens in run_autodiscover.py) ----
 : "${ENABLE_FLOSS:=1}"
 : "${FLOSS_MINLEN:=}"
 : "${FLOSS_ONLY:=}"
 : "${FLOSS_ARGS:=}"
 : "${FLOSS_PER_FN:=20}"
 
+# ---- Bootstrap / deps ----
 : "${BOOTSTRAP:=1}"
 : "${REQUIREMENTS:=}"
 : "${PIN_PYCC:=pycparser}"
@@ -80,6 +91,12 @@ PY
 }
 _bootstrap_env
 
+# Ensure child processes see these settings
+export LLM_ENDPOINT LLM_MODEL HUNT_LLM_CONCURRENCY HUNT_LLM_MAX_TOKENS
+export HUNT_MIN_SIZE HUNT_TOPN HUNT_CACHE HUNT_RESUME
+export ENABLE_CAPA CAPA_ARGS ENABLE_YARA YARA_RULES
+export ENABLE_FLOSS FLOSS_MINLEN FLOSS_ONLY FLOSS_ARGS FLOSS_PER_FN
+
 mkdir -p work/logs
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="work/logs/pipeline.${STAMP}.log"
@@ -93,7 +110,7 @@ _ts_filter_gawk() {
     function hms(sec,  h, m, s) { h=int(sec/3600); m=int((sec%3600)/60); s=sec%60; return sprintf("%02d:%02d:%02d", h,m,s) }
     {
       now = systime(); line = $0
-      if (match(line, /\[(llm|humanize|reimpl)\] progress[[:space:]]+([0-9]+)\/([0-9]+)/, m)) {
+      if (match(line, /\[(llm|humanize|reimpl|hunt)\] progress[[:space:]]+([0-9]+)\/([0-9]+)/, m)) {
         done=m[2]+0; total=m[3]+0; elapsed=now-start; pct=(total>0)?int(100*done/total):0;
         rate=(elapsed>0 && done>0)? done/elapsed:0; remain=(rate>0)? int((total-done)/rate):-1; eta=(remain>=0)? hms(remain):"??:??:??";
         printf("[%s] %s | %d%% | elapsed %s | ETA %s\n", strftime("%H:%M:%S", now), line, pct, hms(elapsed), eta); fflush();
@@ -103,7 +120,7 @@ _ts_filter_gawk() {
 _ts_filter_sh() {
   local start_epoch="$1"
   while IFS= read -r line; do
-    if [[ "$line" =~ \[(llm|humanize|reimpl)\]\ progress[[:space:]]+([0-9]+)/([0-9]+) ]]; then
+    if [[ "$line" =~ \[(llm|humanize|reimpl|hunt)\]\ progress[[:space:]]+([0-9]+)/([0-9]+) ]]; then
       now=$(date +%s)
       done=${BASH_REMATCH[2]}
       total=${BASH_REMATCH[3]}
@@ -130,12 +147,15 @@ echo " Timestamp:    $STAMP"
 echo " Log:          $LOG"
 echo " LLM:          $LLM_MODEL @ $LLM_ENDPOINT"
 echo " HUMANIZE_AST: ${HUMANIZE_AST:-0}"
+echo " RESUME:       ${HUNT_RESUME:-0}"
+echo " CAPA:         ${ENABLE_CAPA:-0} (args='${CAPA_ARGS}')"
+echo " YARA:         ${ENABLE_YARA:-0} (rules='${YARA_RULES}')"
 echo " FLOSS:        ${ENABLE_FLOSS:-0} (minlen='${FLOSS_MINLEN:-}', only='${FLOSS_ONLY:-}')"
 echo "==============================================="
 
 if [[ "$RESET_RUN" == "1" ]]; then
-  rm -f work/hunt/functions.labeled.jsonl work/hunt/.progress
-  echo "[reset] cleared work/hunt/functions.labeled.jsonl and .progress"
+  rm -f work/hunt/functions.labeled.jsonl work/hunt/label.progress
+  echo "[reset] cleared work/hunt/functions.labeled.jsonl and label.progress"
 fi
 
 AN_START=$(date +%s)
