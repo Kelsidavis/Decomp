@@ -25,17 +25,26 @@ _ts_filter_gawk() { local s="$1"; gawk -v start="$s" '
       printf("[%s] %s | %d%% | elapsed %s | ETA %s\n", strftime("%H:%M:%S",now), line, pct, hms(elapsed), eta);
     } else { printf("[%s] %s\n", strftime("%H:%M:%S",now), line); } fflush(); }'
 }
-_ts_filter_sh() { local s="$1"; while IFS= read -r line; do
-  if [[ "$line" =~ \[reimpl\]\ progress[[:space:]]+([0-9]+)/([0-9]+) ]]; then
-    now=$(date +%s); done=${BASH_REMATCH[1]}; total=${BASH_REMATCH[2]}; elapsed=$((now-s));
-    if (( done>0 )); then rate=$(( done / (elapsed>0?elapsed:1) )); else rate=0; fi
-    if (( rate>0 )); then remain=$(((total-done)/rate)); else remain=-1; fi
-    if (( remain>=0 )); then eta=$(printf "%02d:%02d:%02d" $((remain/3600)) $(((remain%3600)/60)) $((remain%60))); else eta="??:??:??"; fi
-    printf "[%s] %s | %s%% | elapsed %02d:%02d:%02d | ETA %s\n" "$(date +%T)" "$line" $(( (100*done)/ (total>0?total:1) )) $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)) "$eta"
-  else
-    printf "[%s] %s\n" "$(date +%T)" "$line"
-  fi
-done; }
+_ts_filter_sh() { 
+  local s="$1"
+  while IFS= read -r line; do
+    if [[ "$line" =~ \[reimpl\]\ progress[[:space:]]+([0-9]+)/([0-9]+) ]]; then
+      now=$(date +%s); done=${BASH_REMATCH[1]}; total=${BASH_REMATCH[2]}; elapsed=$((now-s));
+      rate=$(awk -v d="$done" -v e="$elapsed" 'BEGIN{ if (e>0) printf "%.6f", d/e; else print 0 }')
+      remain=$(awk -v r="$rate" -v t="$total" -v d="$done" 'BEGIN{ if (r>0) printf "%.0f", (t-d)/r; else print -1 }')
+      if (( remain >= 0 )); then
+        printf -v ETA "%02d:%02d:%02d" $((remain/3600)) $(((remain%3600)/60)) $((remain%60))
+      else
+        ETA="??:??:??"
+      fi
+      pct=$(( total>0 ? (100*done)/total : 0 ))
+      printf "[%s] %s | %s%% | elapsed %02d:%02d:%02d | ETA %s\n" \
+        "$(date +%T)" "$line" "$pct" $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)) "$ETA"
+    else
+      printf "[%s] %s\n" "$(date +%T)" "$line"
+    fi
+  done
+}
 _ts_and_progress(){ local s="$1"; if (( have_gawk )); then _ts_filter_gawk "$s"; else _ts_filter_sh "$s"; fi }
 
 START=$(date +%s)

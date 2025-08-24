@@ -9,20 +9,20 @@ import requests
 
 # -------------------- env & defaults --------------------
 LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "")
+LLM_MODEL    = os.getenv("LLM_MODEL", "")
 
-MAX_TOKENS   = int(os.getenv("HUNT_LLM_MAX_TOKENS", "256"))
-CONCURRENCY  = max(1, int(os.getenv("HUNT_LLM_CONCURRENCY", "6")))
-TIMEOUT_S    = int(os.getenv("HUNT_LLM_TIMEOUT", "60"))
-RETRIES      = int(os.getenv("HUNT_LLM_RETRIES", "2"))
+MAX_TOKENS  = int(os.getenv("HUNT_LLM_MAX_TOKENS", "256"))
+CONCURRENCY = max(1, int(os.getenv("HUNT_LLM_CONCURRENCY", "6")))
+TIMEOUT_S   = int(os.getenv("HUNT_LLM_TIMEOUT", "60"))
+RETRIES     = int(os.getenv("HUNT_LLM_RETRIES", "2"))
 
-# llama.cpp compatibility: leave grammar OFF by default; and allow disabling response_format
+# llama.cpp compatibility
 PREFER_GRAMMAR = os.getenv("HUNT_GRAMMAR", "0").lower() in ("1","true","yes","on")
 FORCE_TEXT     = os.getenv("HUNT_LLM_FORCE_TEXT", "0").lower() in ("1","true","yes","on")
 
 # Cache controls
-USE_CACHE  = os.getenv("HUNT_CACHE", "0").lower() in ("1","true","yes","on")
-CACHE_DIR  = pathlib.Path(os.getenv("HUNT_CACHE_DIR", "work/cache/labels"))
+USE_CACHE = os.getenv("HUNT_CACHE", "0").lower() in ("1","true","yes","on")
+CACHE_DIR = pathlib.Path(os.getenv("HUNT_CACHE_DIR", "work/cache/labels"))
 if os.getenv("HUNT_CACHE_CLEAR", "0").lower() in ("1","true","yes","on"):
     if CACHE_DIR.exists():
         for p in CACHE_DIR.glob("*.json"):
@@ -53,7 +53,6 @@ Signals: {signals}
 
 # -------------------- helpers --------------------
 def _extract_content(api_json: Dict[str, Any]) -> str:
-    """Extract 'content' from OpenAI-compatible response variants."""
     ch = (api_json.get("choices") or [{}])[0]
     msg = ch.get("message") or {}
     txt = (msg.get("content") or "").strip()
@@ -86,16 +85,13 @@ def _extract_balanced_json(text: str) -> Optional[str]:
 
 def _safe_json_loads(text: str) -> Optional[Dict[str, Any]]:
     if not text: return None
-    # direct
     try: return json.loads(text)
     except Exception: pass
-    # code fences
     try:
         cf = _strip_code_fences(text)
         if cf and cf != text:
             return json.loads(cf)
     except Exception: pass
-    # first balanced {...}
     try:
         bal = _extract_balanced_json(text)
         if bal: return json.loads(bal)
@@ -167,14 +163,22 @@ ws             ::= [ \t\n\r]*
 '''
     return payload
 
-# -------------------- cache helpers --------------------
-def _cache_key(f: Dict[str, Any]) -> str:
+# -------------------- cache helpers (salted) --------------------
+def _cache_key(f: Dict[str, Any], model: Optional[str] = None) -> str:
+    """
+    Salt key with model + token budget + prompt hash + flags
+    so changes to LLM settings invalidate old cache.
+    """
+    model = model or LLM_MODEL
     addr    = str(f.get("address") or f.get("addr") or f.get("ea") or f.get("name") or "")
     imports = ",".join([str(x) for x in (f.get("imports") or [])])
     strings = ",".join([str(x) for x in (f.get("strings") or [])])
     snippet = f.get("snippet") or ""
-    blob    = "\n".join([addr, imports, strings, snippet])
-    return hashlib.sha1(blob.encode("utf-8","ignore")).hexdigest()
+    content_hash = hashlib.sha1("\n".join([addr, imports, strings, snippet]).encode("utf-8","ignore")).hexdigest()
+
+    prompt_hash  = hashlib.sha1(PROMPT.encode("utf-8","ignore")).hexdigest()[:12]
+    salt = f"{model}|tok{MAX_TOKENS}|g{int(PREFER_GRAMMAR)}|t{int(FORCE_TEXT)}|p{prompt_hash}"
+    return hashlib.sha1(f"{salt}|{content_hash}".encode("utf-8","ignore")).hexdigest()
 
 def _cache_load(key: str) -> Optional[Dict[str, Any]]:
     if not USE_CACHE: return None
@@ -247,7 +251,7 @@ def llm_label_one(func: Dict[str, Any], endpoint: Optional[str], model: Optional
             "confidence": 0.3, "evidence": ["no_llm_configured"],
             "_addr": func.get("address"), "_orig_name": func.get("name"),
         })
-    key = _cache_key(func)
+    key = _cache_key(func, model)
     hit = _cache_load(key)
     if hit is not None:
         return _coerce_label(hit)
@@ -281,7 +285,7 @@ def llm_label_batch(funcs: List[Dict[str, Any]], endpoint: Optional[str], model:
         if VERBOSE_PER_FUNC:
             nm = f.get("name") or f.get("address") or "sub_unknown"
             print(f"[llm] labeling {nm}", flush=True)
-        key = _cache_key(f)
+        key = _cache_key(f, model)
         cached = _cache_load(key)
         if cached is not None:
             return i, _coerce_label(cached)
@@ -310,7 +314,6 @@ def llm_label_batch(funcs: List[Dict[str, Any]], endpoint: Optional[str], model:
             })
     return [x for x in out if x is not None]
 
-# -------------------- CLI (manual test) --------------------
 if __name__ == "__main__":
     import sys
     def load_funcs(path: Optional[str]):

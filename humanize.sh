@@ -11,8 +11,25 @@ set -euo pipefail
 : "${HUNT_TOPN:=1000}"
 : "${HUNT_CACHE:=1}"
 
+RESET_RUN=0
+# Simple arg parsing (supports: --reset-run, --topn N, --min-size N)
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reset-run) RESET_RUN=1; shift ;;
+    --topn)      export HUNT_TOPN="${2:-$HUNT_TOPN}"; shift 2 ;;
+    --min-size)  export HUNT_MIN_SIZE="${2:-$HUNT_MIN_SIZE}"; shift 2 ;;
+    *) echo "[warn] unknown arg: $1" >&2; shift ;;
+  esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# Optional reset of prior run artifacts
+if [[ "$RESET_RUN" == "1" ]]; then
+  rm -f work/hunt/functions.labeled.jsonl work/hunt/.progress
+  echo "[reset] cleared work/hunt/functions.labeled.jsonl and .progress"
+fi
 
 mkdir -p work/logs
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -35,15 +52,26 @@ _ts_filter_gawk() {
     }'
 }
 
+# smoother ETA without gawk: use shell for timestamps and awk for float math
 _ts_filter_sh() {
   local start_epoch="$1"
   while IFS= read -r line; do
     if [[ "$line" =~ \[(llm|humanize|reimpl)\]\ progress[[:space:]]+([0-9]+)/([0-9]+) ]]; then
-      now=$(date +%s); done=${BASH_REMATCH[2]}; total=${BASH_REMATCH[3]}; elapsed=$((now-start_epoch))
-      if (( done>0 )); then rate=$(( done / (elapsed>0?elapsed:1) )); else rate=0; fi
-      if (( rate>0 )); then remain=$(((total-done)/rate)); else remain=-1; fi
-      if (( remain>=0 )); then eta=$(printf "%02d:%02d:%02d" $((remain/3600)) $(((remain%3600)/60)) $((remain%60))); else eta="??:??:??"; fi
-      printf "[%s] %s | %s%% | elapsed %02d:%02d:%02d | ETA %s\n" "$(date +%T)" "$line" $(( (100*done)/ (total>0?total:1) )) $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)) "$eta"
+      now=$(date +%s)
+      done=${BASH_REMATCH[2]}
+      total=${BASH_REMATCH[3]}
+      elapsed=$((now-start_epoch))
+      # floating rate using awk to avoid integer truncation
+      rate=$(awk -v d="$done" -v e="$elapsed" 'BEGIN{ if (e>0) printf "%.6f", d/e; else print 0 }')
+      remain=$(awk -v r="$rate" -v t="$total" -v d="$done" 'BEGIN{ if (r>0) printf "%.0f", (t-d)/r; else print -1 }')
+      if (( remain >= 0 )); then
+        printf -v ETA "%02d:%02d:%02d" $((remain/3600)) $(((remain%3600)/60)) $((remain%60))
+      else
+        ETA="??:??:??"
+      fi
+      pct=$(( total>0 ? (100*done)/total : 0 ))
+      printf "[%s] %s | %s%% | elapsed %02d:%02d:%02d | ETA %s\n" \
+        "$(date +%T)" "$line" "$pct" $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)) "$ETA"
     else
       printf "[%s] %s\n" "$(date +%T)" "$line"
     fi
