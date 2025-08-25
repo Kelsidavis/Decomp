@@ -10,6 +10,16 @@ mkdir -p "$(dirname "$RUN_LOG")"
 # Pretty timestamp pipe
 _fmt(){ while IFS= read -r line; do printf '[%s] %s\n' "$(date +%T)" "$line"; done; }
 
+# Stream a command into the logfile while preserving the command's actual exit code
+runlog() {
+  # $@ is the command to run
+  set +o pipefail
+  "$@" 2>&1 | _fmt | tee -a "$RUN_LOG"
+  local ec=${PIPESTATUS[0]}
+  set -o pipefail
+  return "$ec"
+}
+
 # Set to 0 to disable the pause (or export PAUSE_ON_EXIT=0)
 : "${PAUSE_ON_EXIT:=1}"
 
@@ -54,6 +64,8 @@ export PATH="$PROJECT_ROOT/bin:$PATH"
   echo "[diag] CAPA_SIGNATURES=$CAPA_SIGNATURES"
   echo "[diag] CAPA_DATADIR=$CAPA_DATADIR"
   echo "[diag] YARA_RULES_DIR=$YARA_RULES_DIR"
+  echo "[diag] timeout -> $(command -v timeout)"
+  echo "[diag] REIMPL_ENABLE=$REIMPL_ENABLE"
 } | _fmt | tee -a "$RUN_LOG"
 echo "[full_run] CAPA_RULES=${CAPA_RULES}"
 echo "[full_run] YARA_RULES_DIR=${YARA_RULES_DIR}"
@@ -93,13 +105,18 @@ if [[ "$ENABLE_YARA" == "1" && ! -d "$YARA_RULES_DIR" ]]; then
 fi
 
 # ---- FLOSS timeout (seconds) ----
-: "${FLOSS_TIMEOUT:=600}"
+: "${FLOSS_TIMEOUT:=10}"
 export FLOSS_TIMEOUT
 # run_autodiscover.py reads HUNT_FLOSS_TIMEOUT, so mirror it here
 : "${HUNT_FLOSS_TIMEOUT:=${FLOSS_TIMEOUT}}"
 export HUNT_FLOSS_TIMEOUT
 echo "[full_run] FLOSS_TIMEOUT=${FLOSS_TIMEOUT}s"
 echo "[full_run] HUNT_FLOSS_TIMEOUT=${HUNT_FLOSS_TIMEOUT}s"
+
+# ---- CAPA timeout (seconds) ----
+: "${CAPA_TIMEOUT:=10}"
+export CAPA_TIMEOUT
+echo "[full_run] CAPA_TIMEOUT=${CAPA_TIMEOUT}s"
 
 # ---- guard: don't source ----
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
@@ -140,9 +157,9 @@ fi
 # Exporter knobs (read by ghidra_scripts/simple_export.py inside container)
 : "${GHIDRA_TIMEOUT:=9000}"          # headless wrapper will be allowed up to this many seconds
 : "${EXPORT_FLUSH_EVERY:=500}"       # rewrite valid JSON every N functions
-: "${DECOMPILE_SEC:=12}"             # per-function decompiler budget
+: "${DECOMPILE_SEC:=6}"             # per-function decompiler budget
 : "${EXPORT_TOPN:=${HUNT_TOPN}}"     # mirror HUNT_TOPN unless explicitly overridden
-: "${SKIP_PSEUDO:=0}"                # 1 = metadata-only export (no decompile text)
+: "${SKIP_PSEUDO:=1}"                # 1 = metadata-only export (no decompile text)
 
 # Re-implement stage
 : "${REIMPL_ENABLE:=1}"              # set 0 to skip reimplementation
@@ -196,7 +213,10 @@ need_llmctl(){ [[ -x "$LLMCTL" ]] || { echo "[full] ERROR: LLM controller not fo
 use_profile(){
   local prof="$1"
   need_llmctl
-  "$LLMCTL" switch "$prof" | _fmt | tee -a "$RUN_LOG"
+  if ! runlog "$LLMCTL" switch "$prof"; then
+    echo "[full] WARN: LLM profile switch failed for '$prof' — continuing without this stage" | _fmt | tee -a "$RUN_LOG"
+    return 1
+  fi
   # Export env for this stage
   eval "$("$LLMCTL" env "$prof")"
   export LLM_ENDPOINT LLM_MODEL
@@ -285,6 +305,7 @@ if [[ -s "$OUT_HOST" ]]; then
 else
   echo "[full] no *_out.json found — invoking Ghidra exporter…" | _fmt | tee -a "$RUN_LOG"
   stage "export (docker)"; start_hb
+  mkdir -p "$WORK_DIR/recovered_project/src"
   docker run --rm \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp/gh_user \
@@ -296,6 +317,7 @@ else
     -v "$PWD/$GHIDRA_SCRIPT_DIR:/scripts" \
     -e BINARY_PATH="$BIN_CONT" \
     -e OUT_JSON="$OUT_CONT" \
+    -e OUT_SRC_DIR="/work/recovered_project/src" \
     -e GHIDRA_PROJECT_DIR="/tmp/gh_proj" \
     -e GHIDRA_PROJECT_NAME="myproj" \
     -e GHIDRA_TIMEOUT="$GHIDRA_TIMEOUT" \
@@ -304,7 +326,12 @@ else
     -e EXPORT_TOPN="$EXPORT_TOPN" \
     -e DECOMPILE_SEC="$DECOMPILE_SEC" \
     -e SKIP_PSEUDO="$SKIP_PSEUDO" \
-    "$GHIDRA_IMAGE" 2>&1 | _fmt | tee -a "$RUN_LOG"
+    "$GHIDRA_IMAGE" \
+    /opt/ghidra/support/analyzeHeadless \
+      "/tmp/gh_proj" "myproj" \
+      -import "$BIN_CONT" \
+      -scriptPath /scripts \
+      -postScript simple_export.py 2>&1 | _fmt | tee -a "$RUN_LOG"
   stop_hb; stage_done
 
   if [[ ! -s "$OUT_HOST" ]]; then
@@ -326,6 +353,41 @@ if [[ ! -s "$JSONL" ]]; then
   exit 4
 fi
 
+# --------------------in case of malfunction create the directory we need ----------------------
+: "${SYNTHESIZE_SRC:=1}"
+if [[ "$SYNTHESIZE_SRC" == "1" && ! -d "$WORK_DIR/recovered_project/src" ]]; then
+  echo "[prep] synthesizing per-function stubs from labels → $WORK_DIR/recovered_project/src" | _fmt | tee -a "$RUN_LOG"
+  python3 - "$JSONL" "$WORK_DIR/recovered_project/src" <<'PY'
+import os, sys, json, re
+jsonl_path, out_dir = sys.argv[1:]
+os.makedirs(out_dir, exist_ok=True)
+def to_int(a):
+    if a is None: return None
+    if isinstance(a, int): return a
+    s=str(a).strip().lower()
+    try: return int(s,16) if s.startswith("0x") else int(s,10)
+    except: return None
+def san(s):
+    s = re.sub(r'[^0-9A-Za-z_]+', '_', (s or 'func')); return (s or 'func')[:128]
+count=0
+with open(jsonl_path, 'r', encoding='utf-8') as f:
+  for line in f:
+    try: o = json.loads(line)
+    except: continue
+    addr = to_int(o.get('addr') or o.get('start') or (o.get('function') or {}).get('addr'))
+    if addr is None: continue
+    name = o.get('best_name') or o.get('name') or f"func_{addr:#x}"
+    base = f"{san(name)}_{addr:#x}.c"
+    path = os.path.join(out_dir, base)
+    if os.path.exists(path): continue
+    with open(path,'w',encoding='utf-8') as w:
+      w.write(f"// stub generated from labels; address: {addr:#x}\n\n")
+      w.write(f"void {san(name)}(void) {{\n  /* implemented in reimplement step */\n}}\n")
+    count += 1
+print(f"[prep] wrote {count} stubs")
+PY
+fi
+
 # -------------------- humanize (no LLM) --------------------
 stage "humanize (AST-safe rename)"; start_hb
 SRC_DIR="$WORK_DIR/recovered_project/src"
@@ -341,24 +403,28 @@ else
 fi
 stop_hb; stage_done
 
-# -------------------- re-implement (Qwen) --------------------
 if [[ "$REIMPL_ENABLE" == "1" ]]; then
   stage "re-implement with profile: ${LLM_PROFILE_REIMPL}"; start_hb
-  use_profile "$LLM_PROFILE_REIMPL"
-  export REIMPL_MIN_CONF REIMPL_MAX_FNS
-  if [[ -x "./reimplement.sh" ]]; then
-    stdbuf -oL -eL ./reimplement.sh 2>&1 | _fmt | tee -a "$RUN_LOG"
+  if ! use_profile "$LLM_PROFILE_REIMPL"; then
+    echo "[full] re-implement disabled: failed to switch LLM profile" | _fmt | tee -a "$RUN_LOG"
+    stop_hb; stage_done
   else
-    stdbuf -oL -eL python3 tools/reimplement.py \
-      --src-dir "$OUT_DIR" \
-      --mapping "$JSONL" \
-      --min-conf "$REIMPL_MIN_CONF" \
-      --max-fns "$REIMPL_MAX_FNS" 2>&1 | _fmt | tee -a "$RUN_LOG"
+    export REIMPL_MIN_CONF REIMPL_MAX_FNS
+    REIMPL_IN_DIR="$WORK_DIR/recovered_project_human"
+    REIMPL_OUT_DIR="$WORK_DIR/recovered_project_reimpl/src"
+    mkdir -p "$REIMPL_OUT_DIR"
+    if [[ -x "./reimplement.sh" ]]; then
+      runlog ./reimplement.sh
+    else
+      runlog python3 tools/reimplement.py \
+        --src-dir "$REIMPL_IN_DIR" \
+        --mapping "$JSONL" \
+        --out-dir "$REIMPL_OUT_DIR" \
+        --threshold "$REIMPL_MIN_CONF" \
+        --max-fns "$REIMPL_MAX_FNS"
+    fi
+    stop_hb; stage_done
   fi
-  stop_hb; stage_done
 else
   echo "[full] re-implement disabled (REIMPL_ENABLE=0)" | _fmt | tee -a "$RUN_LOG"
 fi
-
-echo "[full] DONE. See log: $RUN_LOG" | _fmt | tee -a "$RUN_LOG"
-

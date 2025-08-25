@@ -41,7 +41,11 @@ def parse_args():
     ap.add_argument("--mapping", required=True)
     ap.add_argument("--out-dir", default="work/recovered_project_reimpl/src")
     ap.add_argument("--tests-dir", default="work/reimplement/tests")
-    ap.add_argument("--threshold", type=float, default=float(os.getenv("REIMPL_THRESHOLD","0.78")))
+    # Support both --threshold and legacy --min-conf; env fallback supports
+    # REIMPL_THRESHOLD or legacy REIMPL_MIN_CONF.
+    default_thr = float(os.getenv("REIMPL_THRESHOLD", os.getenv("REIMPL_MIN_CONF","0.78")))
+    ap.add_argument("--threshold", type=float, default=default_thr)
+    ap.add_argument("--min-conf", dest="threshold", type=float, help="alias of --threshold")
     ap.add_argument("--max-fns", type=int, default=int(os.getenv("REIMPL_MAX_FNS","120")))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--llm-endpoint", default=os.getenv("LLM_ENDPOINT",""))

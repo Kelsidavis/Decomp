@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
-: "${CAPA_RULES:=rules/capa}"
-: "${CAPA_SIGNATURES:=rules/sigs}"
-exec python3 -m capa.main -r "$CAPA_RULES" --signatures "$CAPA_SIGNATURES" "$@"
+set -euo pipefail
+: "${CAPA_RULES:?Set CAPA_RULES (e.g., projectroot/rules/capa)}"
+: "${CAPA_SIGNATURES:?Set CAPA_SIGNATURES (e.g., projectroot/rules/sigs)}"
+[[ -d "$CAPA_RULES" ]] || { echo "ERROR: CAPA_RULES not a directory: $CAPA_RULES" >&2; exit 2; }
+[[ -d "$CAPA_SIGNATURES" ]] || { echo "ERROR: CAPA_SIGNATURES not a directory: $CAPA_SIGNATURES" >&2; exit 2; }
 
+have_rules=0 have_sigs=0
+for a in "$@"; do
+  [[ "$a" == "-r" || "$a" == "--rules" ]] && have_rules=1
+  [[ "$a" == "-s" || "$a" == "--signatures" ]] && have_sigs=1
+done
+args=("$@")
+(( have_rules )) || args=( -r "$CAPA_RULES" "${args[@]}" )
+(( have_sigs  )) || args=( --signatures "$CAPA_SIGNATURES" "${args[@]}" )
+
+exec python3 -m capa.main "${args[@]}"

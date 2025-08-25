@@ -1,241 +1,170 @@
-#@category Decomp/Export
-# Headless exporter: dump function metadata + (bounded) decompiler text with checkpoints & resume.
+# ghidra_scripts/simple_export.py
+# Runs inside Ghidra headless. Exports:
+#  - JSON summary of functions (start, end, name, prototype, pseudo, etc.)
+#  - One C file per function into OUT_SRC_DIR (if set)
 #
-# Env knobs (read via os.environ):
-#   EXPORT_FLUSH_EVERY   : how often to rewrite OUT_JSON (valid JSON), default 500
-#   EXPORT_TOPN          : limit to top-N functions by body size (0 = all), default 0
-#   EXPORT_MAX_SECONDS   : soft overall budget (0 = no limit), default 0  (we still obey external wrapper timeout)
-#   DECOMPILE_SEC        : per-function decompile timeout seconds, default 12
-#   SKIP_PSEUDO          : "1" to skip decompile text (metadata-only), default "0"
+# Env used (string values):
+#   BINARY_PATH      : input program path (provided by analyzeHeadless wrapper)
+#   OUT_JSON         : absolute output json path (e.g., /work/snapshots/foo_out.json)
+#   OUT_SRC_DIR      : absolute dir for per-function C files (e.g., /work/recovered_project/src)
+#   EXPORT_TOPN      : max functions to export (default: all)
+#   DECOMPILE_SEC    : decompile timeout per function (seconds, default 12)
+#   SKIP_PSEUDO      : "1" to skip decompile text (metadata-only)
 #
-# Args from AnalyzeHeadless:
-#   <OUT_JSON_PATH>
-#
-# Sidecar for resume:
-#   <OUT_JSON_PATH>.addrs.txt   # list of addresses exported (one per line)
-#
-# Progress lines:
-#   "[export] progress <count> functions..."
-#
-# This script is Jython and uses Ghidra APIs.
+# Notes:
+#  - Writes safe filenames as: <sanitized_name>_<addr>.c (addr = 0x... start EA)
+#  - If two functions share a name, address keeps files unique.
+#  - JSON shape is stable and friendly to your current pipeline.
 
-import os, sys, time, json, hashlib
-from java.lang import System
-from ghidra.app.decompiler import DecompInterface, DecompileOptions
+from __future__ import print_function
+import os, re, json, time
+
+from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
-from ghidra.program.model.listing import Function
 from ghidra.program.flatapi import FlatProgramAPI
 
-# -------- util --------
-def getenv(k, default=None):
-    v = os.environ.get(k)
-    if v is None:
-        v = System.getenv(k)  # in case only Java env is set
-    return default if v is None else v
+# ---------- helpers ----------
+def _getenv(k, d=None):
+    v = os.getenv(k)
+    return v if v is not None and v != "" else d
 
-def to_int(s, dv):
-    try: return int(str(s).strip())
-    except: return dv
-
-def now_ts():
-    import time
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-def addr_str(fn):
+def _to_int(x):
+    if x is None: return None
+    if isinstance(x, (int, long)): return int(x)
+    s = str(x).strip().lower()
     try:
-        return fn.getEntryPoint().toString()
-    except:
-        return "0x0"
+        return int(s, 16) if s.startswith("0x") else int(s, 10)
+    except Exception:
+        return None
 
-def fn_size(fn):
+def _hex(ea):
+    return "0x%X" % (int(ea),)
+
+def _san(s):
+    if not s:
+        return "func"
+    s = re.sub(r'[^0-9A-Za-z_]+', '_', s)
+    s = s.strip('_')
+    return s or "func"
+
+def _proto_for(fn):
     try:
-        return fn.getBody().getNumAddresses()
-    except:
-        return 0
+        # getPrototypeString(showCallingConvention, includeReturnStorage)
+        return fn.getPrototypeString(True, True)
+    except Exception:
+        return "void %s(void)" % (fn.getName(),)
 
-def read_sidecar(side_path):
-    done = set()
+def _ensure_dir(p):
+    if not p: return
+    if not os.path.isdir(p):
+        os.makedirs(p)
+
+# ---------- config ----------
+BINARY_PATH   = _getenv("BINARY_PATH")
+OUT_JSON      = _getenv("OUT_JSON", "/work/snapshots/out.json")
+OUT_SRC_DIR   = _getenv("OUT_SRC_DIR")  # optional
+EXPORT_TOPN   = _to_int(_getenv("EXPORT_TOPN"))
+DECOMPILE_SEC = _to_int(_getenv("DECOMPILE_SEC")) or 12
+SKIP_PSEUDO   = _getenv("SKIP_PSEUDO", "0") == "1"
+
+monitor = ConsoleTaskMonitor()
+prog     = currentProgram
+if prog is None:
+    # When running in headless, Ghidra will open the program before this script runs.
+    raise RuntimeError("No program is open in Ghidra script context")
+
+fm       = prog.getFunctionManager()
+api      = FlatProgramAPI(prog)
+
+iface = DecompInterface()
+iface.openProgram(prog)
+# Tweak options if you like:
+# iface.setSimplificationStyle("decompile")
+
+funcs_iter = fm.getFunctions(True)
+functions = []
+for f in funcs_iter:
     try:
-        f = open(side_path, "r")
-        for ln in f:
-            ln = ln.strip()
-            if ln:
-                done.add(ln)
-        f.close()
-    except:
-        pass
-    return done
-
-def append_sidecar(side_path, addrs):
-    if not addrs: return
-    f = open(side_path, "a")
-    for a in addrs: f.write(a + "\n")
-    f.close()
-
-def write_json_safe(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(obj, fh, indent=2)
-    # atomic-ish
-    try:
-        os.replace(tmp, path)
-    except:
-        os.rename(tmp, path)
-
-# -------- main --------
-def main():
-    out_json = None
-    if len(sys.argv) >= 2:
-        out_json = sys.argv[1]
-    if not out_json:
-        out_json = getenv("OUT_JSON", "/work/snapshots/out.json")
-    out_json = str(out_json)
-
-    flush_every   = to_int(getenv("EXPORT_FLUSH_EVERY", "500"), 500)
-    topn          = to_int(getenv("EXPORT_TOPN", "0"), 0)
-    max_seconds   = to_int(getenv("EXPORT_MAX_SECONDS", "0"), 0)
-    decomp_sec    = to_int(getenv("DECOMPILE_SEC", "12"), 12)
-    skip_pseudo   = str(getenv("SKIP_PSEUDO", "0")).strip() in ("1","true","yes","on")
-
-    sidecar = out_json + ".addrs.txt"
-    t_start = time.time()
-
-    monitor = ConsoleTaskMonitor()
-
-    prog = currentProgram
-    api  = FlatProgramAPI(prog)
-
-    # Build function list
-    fn_mgr = prog.getFunctionManager()
-    it = fn_mgr.getFunctions(True)  # forward
-    fns = []
-    while it.hasNext() and not monitor.isCancelled():
-        fns.append(it.next())
-
-    # sort by body size desc for best ROI if topn > 0
-    fns.sort(key=lambda f: fn_size(f), reverse=True)
-    if topn > 0 and topn < len(fns):
-        fns = fns[:topn]
-
-    # Resume: read sidecar for already-exported addresses
-    done_addrs = read_sidecar(sidecar)
-
-    # Decompiler setup
-    ifc = None
-    if not skip_pseudo:
-        ifc = DecompInterface()
-        opts = DecompileOptions()
-        try:
-            # per-function timeout (seconds)
-            opts.setTimeout(decomp_sec)
-        except:
-            pass
-        ifc.setOptions(opts)
-        if not ifc.openProgram(prog):
-            # if fails, fall back to metadata-only
-            ifc = None
-            skip_pseudo = True
-
-    # Program meta
-    md5 = ""
-    try:
-        cm = prog.getMemory()
-        bf = cm.getAllInitializedAddressSet().getNumAddresses()
-        md5 = str(prog.getExecutableMD5()) if prog.getExecutableMD5() else ""
-    except:
+        start = int(f.getEntryPoint().getOffset())
+        end   = int(f.getBody().getMaxAddress().getOffset())
+        functions.append((start, end, f))
+    except Exception:
         pass
 
-    meta = {
-        "program_name": prog.getName(),
-        "lang": str(prog.getLanguage().getLanguageID()),
-        "compiler": str(prog.getCompilerSpec().getCompilerSpecID()),
-        "image_base": str(prog.getImageBase()),
-        "md5": md5,
-        "export_ts": now_ts(),
-        "flush_every": flush_every,
-        "topn": topn,
-        "decompile_sec": decomp_sec,
-        "skip_pseudo": skip_pseudo,
-    }
+# Sort by entry EA to keep stable order
+functions.sort(key=lambda t: t[0])
+if EXPORT_TOPN and EXPORT_TOPN > 0:
+    functions = functions[:EXPORT_TOPN]
 
-    exported = []
-    exported_addrs_batch = []
-    total = len(fns)
-    count = 0
+# Prepare output
+items = []
+if OUT_SRC_DIR:
+    _ensure_dir(OUT_SRC_DIR)
 
-    def flush():
-        if not exported:
-            # if resuming and nothing new yet, but maybe an old file exists
-            if os.path.isfile(out_json):
-                return
-        obj = {
-            "meta": meta,
-            "functions": exported
-        }
-        write_json_safe(out_json, obj)
-
-    for fn in fns:
-        if monitor.isCancelled():
-            break
-
-        a = addr_str(fn)
-        if a in done_addrs:
-            continue
-
-        # time budget?
-        if max_seconds > 0 and (time.time() - t_start) >= max_seconds:
-            break
-
-        # collect minimal metadata
-        rec = {
-            "name": fn.getName(),
-            "addr": a,
-            "size": fn_size(fn)
-        }
-
-        # decompile (optional, with bounded time)
-        if not skip_pseudo and ifc is not None:
-            try:
-                res = ifc.decompileFunction(fn, decomp_sec, monitor)
-                if res and res.getDecompiledFunction():
-                    code = res.getDecompiledFunction().getC()
-                    # trim very long blocks to keep JSON manageable
-                    if code is not None and len(code) > 20000:
-                        code = code[:20000] + "\n/* ...truncated... */\n"
-                    rec["decomp"] = code
-                else:
-                    rec["decomp"] = None
-            except:
-                rec["decomp"] = None
+def _write_c_file(name, addr, proto, pseudo):
+    if not OUT_SRC_DIR:
+        return
+    base = "%s_%s.c" % (_san(name), _hex(addr))
+    path = os.path.join(OUT_SRC_DIR, base)
+    with open(path, "w") as w:
+        w.write("/*\n")
+        w.write(" * Function: %s\n" % name)
+        w.write(" * Address : %s\n" % _hex(addr))
+        w.write(" * Generated by Ghidra exporter\n")
+        w.write(" */\n\n")
+        if proto:
+            w.write(proto)
+            if not proto.strip().endswith("}"):
+                w.write(" {\n")
         else:
-            rec["decomp"] = None
+            w.write("void %s(void) {\n" % _san(name))
+        if pseudo:
+            w.write("\n  /* Decompiled pseudocode */\n")
+            for line in pseudo.splitlines():
+                w.write("  // %s\n" % line)
+        else:
+            w.write("  /* no pseudocode available (timeout or disabled) */\n")
+        w.write("\n}\n")
+    return path
 
-        exported.append(rec)
-        exported_addrs_batch.append(a)
-        count += 1
+count = 0
+t0 = time.time()
+for (startEA, endEA, fn) in functions:
+    name = fn.getName()
+    proto = _proto_for(fn)
+    pseudo = ""
+    decomp_ok = False
+    if not SKIP_PSEUDO:
+        try:
+            res = iface.decompileFunction(fn, DECOMPILE_SEC, monitor)
+            if res and res.decompileCompleted():
+                df = res.getDecompiledFunction()
+                if df:
+                    pseudo = df.getC()
+                    decomp_ok = True
+        except Exception:
+            pass
 
-        if (count % 500) == 0:
-            print("[export] progress %d functions..." % count)
-            flush()
-            append_sidecar(sidecar, exported_addrs_batch)
-            exported_addrs_batch = []
+    # write .c file
+    c_path = _write_c_file(name, startEA, proto, pseudo)
 
-        # obey external timeout wrapper if present
-        # (no direct signal visibility here; rely on wrapper to kill us)
+    items.append({
+        "start": startEA,
+        "end": endEA,
+        "name": name,
+        "prototype": proto,
+        "pseudo": pseudo,
+        "decompiled": bool(pseudo),
+        "source_path": c_path or ""
+    })
+    count += 1
 
-    # final flush
-    flush()
-    append_sidecar(sidecar, exported_addrs_batch)
-    print("[export] done, total exported: %d" % count)
+# Emit JSON
+_ensure_dir(os.path.dirname(OUT_JSON))
+with open(OUT_JSON, "w") as f:
+    json.dump({"functions": items}, f)
 
-if __name__ == "__main__":
-    try:
-        main()
-    except SystemExit:
-        raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print("[export] ERROR:", e)
-        sys.exit(1)
+print("Exported %d functions to %s" % (count, OUT_JSON))
+if OUT_SRC_DIR:
+    print("Per-function C files in: %s" % OUT_SRC_DIR)
 

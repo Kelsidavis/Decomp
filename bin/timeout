@@ -1,9 +1,31 @@
 #!/usr/bin/env bash
-# If invoked like: timeout 180 floss ..., bump to FLOSS_TIMEOUT (default 600)
+# Smart timeout shim for FLOSS/CAPA; defers to system timeout otherwise.
 set -euo pipefail
-FLOSS_T="${FLOSS_TIMEOUT:-600}"
-if [[ $# -ge 3 && "$1" =~ ^[0-9]+$ && "$2" == "floss" ]]; then
-  exec /usr/bin/timeout "$FLOSS_T" "${@:2}"
-else
-  exec /usr/bin/timeout "$@"
-fi
+
+# parse GNU timeout options until first non-option (DURATION)
+opts=(); duration=""
+while (( $# )); do
+  case "$1" in
+    -k|--kill-after) opts+=( "$1" "$2" ); shift 2 ;;
+    -s|--signal)     opts+=( "$1" "$2" ); shift 2 ;;
+    --foreground|--verbose|--preserve-status) opts+=( "$1" ); shift ;;
+    --help|--version) exec /usr/bin/timeout "$@" ;;
+    -*) opts+=( "$1" ); shift ;;
+    *)  duration="$1"; shift; break ;;
+  esac
+done
+[[ -z "${duration:-}" || $# -eq 0 ]] && exec /usr/bin/timeout "${opts[@]}" ${duration:+$duration} "$@"
+
+cmd="$1"; shift
+base="$(basename -- "$cmd")"
+target="other"
+if [[ "$base" == "floss" ]]; then target="floss"
+elif [[ "$base" == "capa" ]]; then target="capa"
+elif [[ "$base" =~ ^python[0-9.]*$ && "${1:-}" == "-m" && "${2:-}" =~ ^capa ]]; then target="capa"; fi
+
+case "$target" in
+  floss) duration="${FLOSS_TIMEOUT:-600}" ;;
+  capa)  duration="${CAPA_TIMEOUT:-600}" ;;
+esac
+
+exec /usr/bin/timeout "${opts[@]}" "$duration" "$cmd" "$@"
