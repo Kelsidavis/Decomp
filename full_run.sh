@@ -2,6 +2,8 @@
 # full_run.sh — end-to-end pipeline (decompile → humanize → reimplement)
 # Logs to work/logs/full_run.<timestamp>.log
 
+python3 tools/preflight.py --full || echo "[preflight] continuing despite warnings"
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

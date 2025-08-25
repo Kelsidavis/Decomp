@@ -1,289 +1,310 @@
 #!/usr/bin/env python3
-# tools/humanize_source.py
-import argparse, json, os, re, shutil, sys
+"""
+Humanize recovered C source by applying LLM-suggested function names.
+
+Features:
+- Auto-resume (HUMANIZE_RESUME=1): tracks index in work/humanize.progress; skips already-processed files.
+- Progress lines: "[humanize] progress d/t | ...".
+- Robust mapping load via json_guard.load_labels_stream with auto-repair.
+- Regex-safe renames for function identifiers:
+    • Calls/defs/prototypes:   sub_XXXX(... )
+    • Func-pointer declarators: (*sub_XXXX)
+- Optional AST-assisted mode (HUMANIZE_AST=1) via pycparser:
+    • Parses each file (with fake libc includes) to discover which function names
+      actually appear as decl/def/call in that file; refines rename set per-file.
+    • Falls back to regex-only if parsing fails (no crash).
+
+Environment:
+  HUMANIZE_AST=1           -> enable AST-assisted refinement (default off)
+  WORK_DIR=work            -> base for progress file
+"""
+
+from __future__ import annotations
+import os, re, sys, shutil, time, argparse
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Iterable, Set, Optional
 
-HUMANIZE_AST_OPT = os.getenv("HUMANIZE_AST", "1").lower() in ("1","true","yes","on")
+# ------------- toggles & paths -------------
+HUMANIZE_AST = os.getenv("HUMANIZE_AST","0").lower() in ("1","true","yes","on")
+WORK_DIR     = Path(os.getenv("WORK_DIR","work"))
+PROGRESS_FILE = WORK_DIR / "humanize.progress"
 
-PAIR_CANDIDATES = [
-    ("_orig_name", "name"),
-    ("name_orig", "name_human"),
-    ("old", "new"),
-    ("func_name", "suggested_name"),
-    ("original", "proposed"),
-    ("symbol", "name"),
-]
-
-VALID_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-# ---- optional pycparser import ----
-PARSER_OK = False
-try:
-    if HUMANIZE_AST_OPT:
-        from pycparser import c_parser, c_ast, c_generator  # type: ignore
-        PARSER_OK = True
-except Exception:
-    PARSER_OK = False
-
-def pairs_from_obj(obj: dict) -> Tuple[str, str] | None:
-    for a, b in PAIR_CANDIDATES:
-        if a in obj and b in obj:
-            old = str(obj[a]).strip()
-            new = str(obj[b]).strip()
-            if old and new:
-                return (old, new)
-    return None
-
-def load_labels_and_mapping(path: Path) -> Tuple[Dict[str, str], Dict[str, dict]]:
-    """
-    Returns:
-      mapping: {old_name -> new_name}
-      labelinfo: {new_name -> full_label_object}
-    """
-    mapping: Dict[str, str] = {}
-    labelinfo: Dict[str, dict] = {}
-    text = path.read_text(encoding="utf-8", errors="ignore")
-
-    objs: List[dict] = []
+# ------------- mapping load (guarded) -------------
+def load_mapping_stream(mapping_path: Path) -> Iterable[Dict[str,Any]]:
     try:
-        data = json.loads(text)
-        objs = data if isinstance(data, list) else [data]
+        from json_guard import load_labels_stream
+        return load_labels_stream(mapping_path)
     except Exception:
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                objs.append(json.loads(line))
-            except Exception:
-                continue
+        # fallback: naive line-by-line load (repair minimal)
+        def _raw_lines():
+            with mapping_path.open("r",encoding="utf-8",errors="ignore") as fh:
+                for ln in fh:
+                    ln = ln.strip()
+                    if not ln: continue
+                    import json
+                    try:
+                        yield json.loads(ln)
+                    except Exception:
+                        yield {"name":"unknown","confidence":0.3,"evidence":["invalid_json"]}
+        return _raw_lines()
 
-    for obj in objs:
-        if not isinstance(obj, dict):
+def build_rename_map(mapping_path: Path) -> Dict[str,str]:
+    rename: Dict[str,str] = {}
+    for rec in load_mapping_stream(mapping_path):
+        old = str(rec.get("_orig_name") or "").strip()
+        new = str(rec.get("name") or "").strip()
+        if not old or not new or old == new:
             continue
-        pair = pairs_from_obj(obj)
-        if not pair:
+        # C identifier sanity
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", new):
             continue
-        old, new = pair
-        if not VALID_IDENT.match(old):
-            continue
-        new_sane = re.sub(r"[^A-Za-z0-9_]", "_", new)
-        if not VALID_IDENT.match(new_sane):
-            continue
-        mapping[old] = new_sane
-        labelinfo[new_sane] = obj  # keyed by final name for convenience
+        rename[old] = new
+    return rename
 
-    return mapping, labelinfo
-
-def resolve_collisions(mapping: Dict[str, str]) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    used: Dict[str, str] = {}
-    for old, new in mapping.items():
-        base = new
-        i = 1
-        while new in used and used[new] != old:
-            i += 1
-            new = f"{base}_{i}"
-        used[new] = old
-        out[old] = new
-    return out
-
-def compile_subs(mapping: Dict[str, str]) -> List[Tuple[re.Pattern, str, str]]:
-    subs: List[Tuple[re.Pattern, str, str]] = []
-    for old in sorted(mapping.keys(), key=len, reverse=True):
-        new = mapping[old]
-        pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])")
-        subs.append((pattern, new, old))
-    return subs
-
-def rewrite_file_text_regex(text: str, subs: List[Tuple[re.Pattern, str, str]]) -> Tuple[str, Dict[str, int]]:
-    counts: Dict[str, int] = {}
-    out = text
-    for rx, new, old in subs:
-        out, n = rx.subn(new, out)
-        if n:
-            counts[old] = counts.get(old, 0) + n
-    return out, counts
-
-# ---- Heuristics for parameter naming ----
-BAD_PARAM = re.compile(r"^(?:v\d+|a\d+|arg\d+|param\d+|__?\w+)$", re.I)
-def _guess_param_name(ctype: str, idx: int, hints_in: List[str], hints_out: List[str]) -> str:
-    # try hints first
-    if idx < len(hints_in):
-        candidate = re.sub(r"[^A-Za-z0-9_]", "_", hints_in[idx])[:32]
-        if VALID_IDENT.match(candidate): return candidate
-    # heuristic by type
-    t = ctype.lower()
-    if "*" in t:
-        # pointer types
-        for cand in ("buf", "dst", "src", "data", "out", "ptr", "ctx"):
-            return cand if idx == 0 else f"{cand}{idx+1}"
-    if "size" in t or "len" in t:
-        return "len" if idx == 0 else f"len{idx+1}"
-    if "count" in t or "n" == t or "num" in t:
-        return "count" if idx == 0 else f"count{idx+1}"
-    if "handle" in t or "hwnd" in t or "context" in t or "ctx" in t:
-        return "ctx" if idx == 0 else f"ctx{idx+1}"
-    if "file" in t or "path" in t:
-        return "path" if idx == 0 else f"path{idx+1}"
-    if "flag" in t:
-        return "flags" if idx == 0 else f"flags{idx+1}"
-    # generic fallback
-    return f"arg{idx+1}"
-
-def _apply_param_names_pyc(parser, generator, code: str, rename_map: Dict[str,str], labelinfo: Dict[str,dict]) -> Optional[str]:
+# ------------- regex renamer -------------
+def rename_in_text(text: str, rename: Dict[str,str]) -> Tuple[str,int]:
     """
-    Parse with pycparser, rename functions, and improve parameter names
-    for functions that got renamed. Returns None if parsing fails.
+    Replace function identifiers in:
+      - calls/defs/prototypes:   foo(
+      - func-pointer declarators: (*foo)
+    NOTE: We intentionally avoid general ID renames to not touch variables/macros.
     """
+    count = 0
+    for old, new in rename.items():
+        # calls/defs/prototypes: foo(
+        pat1 = re.compile(rf"\b{re.escape(old)}\b(?=\s*\()", flags=re.MULTILINE)
+        text, n1 = pat1.subn(new, text)
+        # function pointer declarators: (*foo)
+        # keep inner spacing; only swap the identifier
+        pat2 = re.compile(rf"\(\s*\*{re.escape(old)}\s*\)", flags=re.MULTILINE)
+        text, n2 = pat2.subn(lambda m: m.group(0).replace(old, new), text)
+        count += (n1 + n2)
+    return text, count
+
+# ------------- file helpers -------------
+def list_source_files(src_dir: Path, exts: Tuple[str,...]=(".c",".h")) -> List[Path]:
+    files: List[Path] = []
+    for ext in exts:
+        files.extend(src_dir.rglob(f"*{ext}"))
+    files.sort()
+    return files
+
+def ensure_out_path(out_dir: Path, src_root: Path, src_file: Path) -> Path:
+    rel = src_file.relative_to(src_root)
+    dest = out_dir / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return dest
+
+def read_progress() -> int:
+    if not PROGRESS_FILE.exists(): return -1
     try:
-        ast = parser.parse(code)
+        return int(PROGRESS_FILE.read_text(encoding="utf-8").strip())
+    except Exception:
+        return -1
+
+def write_progress(i: int) -> None:
+    try:
+        PROGRESS_FILE.write_text(str(i), encoding="utf-8")
+    except Exception:
+        pass
+
+def clear_progress() -> None:
+    try:
+        if PROGRESS_FILE.exists(): PROGRESS_FILE.unlink()
+    except Exception:
+        pass
+
+# ------------- AST-assisted refinement -------------
+def _pycparser_fake_inc() -> Optional[str]:
+    """Locate pycparser's fake_libc_include directory if available."""
+    try:
+        import pycparser, os as _os
+        base = _os.path.dirname(pycparser.__file__)
+        cand = _os.path.join(base, "utils", "fake_libc_include")
+        return cand if os.path.isdir(cand) else None
     except Exception:
         return None
 
-    class Renamer(c_ast.NodeVisitor):  # type: ignore
-        def visit_FuncDef(self, node: "c_ast.FuncDef"):  # type: ignore
-            # rename function identifier
-            if isinstance(node.decl, c_ast.Decl) and isinstance(node.decl.type, c_ast.FuncDecl):
-                old_name = node.decl.name
-                if old_name in rename_map:
-                    node.decl.name = rename_map[old_name]
-                # param naming
-                ftype = node.decl.type
-                params = getattr(getattr(ftype, "args", None), "params", []) or []
-                hints = labelinfo.get(rename_map.get(old_name, old_name), {})
-                hin = list(hints.get("inputs") or [])
-                hout = list(hints.get("outputs") or [])
-                for i, p in enumerate(params):
-                    if not isinstance(p, c_ast.Decl):  # type: ignore
-                        continue
-                    # current param name/type
-                    pname = p.name or f"arg{i+1}"
-                    ptype = p.type.type.names if hasattr(p.type, "type") and hasattr(p.type.type, "names") else []
-                    ctype = " ".join(ptype) if isinstance(ptype, list) else str(ptype)
-                    if BAD_PARAM.match(pname) or not VALID_IDENT.match(pname):
-                        newp = _guess_param_name(ctype, i, hin, hout)
-                        p.name = newp
+def _collect_names_ast(src_path: Path, exts: Tuple[str,...]) -> Set[str]:
+    """
+    Parse a C file with pycparser and collect function identifiers that appear as:
+      - function definitions / prototypes (Decl/FuncDecl)
+      - callee names in function calls (FuncCall with ID)
+      - function pointer declarators (Decl with PtrDecl->FuncDecl)
+    Returns a set of identifier names found in these contexts.
+    """
+    names: Set[str] = set()
+    try:
+        from pycparser import c_ast, parse_file
+    except Exception:
+        return names  # pycparser not available
 
+    fake = _pycparser_fake_inc()
+    cpp_args = []
+    if fake:
+        cpp_args = [f'-I{fake}']
+    try:
+        ast = parse_file(
+            str(src_path),
+            use_cpp=True,
+            cpp_path='cpp' if os.name != 'nt' else 'clang',
+            cpp_args=cpp_args
+        )
+    except Exception:
+        # If preprocessing fails (macros/headers), give up gracefully
+        return names
+
+    class Visitor(c_ast.NodeVisitor):  # type: ignore
         def visit_Decl(self, node: "c_ast.Decl"):  # type: ignore
-            # rename function declarations (prototypes)
-            if isinstance(node.type, c_ast.FuncDecl):  # type: ignore
-                old_name = node.name
-                if old_name in rename_map:
-                    node.name = rename_map[old_name]
+            # Any declaration whose type resolves to FuncDecl, possibly through PtrDecl
+            t = node.type
+            is_func_decl = False
+            while t is not None:
+                if t.__class__.__name__ == "FuncDecl":
+                    is_func_decl = True
+                    break
+                t = getattr(t, "type", None)
+            if is_func_decl and node.name:
+                names.add(str(node.name))
+            # continue traversal
+            self.generic_visit(node)
+
+        def visit_FuncDef(self, node: "c_ast.FuncDef"):  # type: ignore
+            try:
+                dn = node.decl.name
+                if dn: names.add(str(dn))
+            except Exception:
+                pass
+            self.generic_visit(node)
 
         def visit_FuncCall(self, node: "c_ast.FuncCall"):  # type: ignore
-            # rename call sites
-            if isinstance(node.name, c_ast.ID):  # type: ignore
-                name = node.name.name
-                if name in rename_map:
-                    node.name.name = rename_map[name]
+            try:
+                callee = node.name
+                # Direct ID call: foo(...)
+                if hasattr(callee, "name"):
+                    nm = getattr(callee, "name", None)
+                    if nm: names.add(str(nm))
+            except Exception:
+                pass
+            self.generic_visit(node)
 
-    Renamer().visit(ast)
     try:
-        return generator.visit(ast)
+        Visitor().visit(ast)
     except Exception:
-        return None
+        # AST traversal failed — ignore
+        return names
 
-def humanize_tree_ast(src_dir: Path, out_dir: Path, mapping: Dict[str, str], labelinfo: Dict[str,dict]) -> Tuple[int,int]:
-    parser = c_parser.CParser()
-    generator = c_generator.CGenerator()
-    changed_files = 0
-    total_repl = 0
+    return names
 
-    for path in src_dir.rglob("*.c"):
-        code = path.read_text(encoding="utf-8", errors="ignore")
-        new_code = _apply_param_names_pyc(parser, generator, code, mapping, labelinfo)
-        if new_code is None:
-            # fallback to regex if this file fails to parse
-            subs = compile_subs(mapping)
-            new_code, counts = rewrite_file_text_regex(code, subs)
-            total_repl += sum(counts.values())
-        else:
-            # rough replacement counts (best effort)
-            cnt = 0
-            for old, new in mapping.items():
-                if old == new: continue
-                cnt += len(re.findall(rf"(?<![A-Za-z0-9_]){re.escape(new)}(?![A-Za-z0-9_])", new_code))
-            total_repl += cnt
+def refine_rename_for_file(src_path: Path, rename_global: Dict[str,str], exts: Tuple[str,...]) -> Dict[str,str]:
+    """
+    If HUMANIZE_AST=1 and pycparser works, filter the rename map to only names
+    that appear in decl/def/call contexts within this file.
+    Otherwise, return the global rename map (regex-only behavior).
+    """
+    if not HUMANIZE_AST:
+        return rename_global
 
-        out_path = out_dir / path.relative_to(src_dir)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(new_code, encoding="utf-8")
-        changed_files += 1
-        if changed_files % 20 == 0:
-            print(f"[humanize] progress {changed_files}/?", flush=True)
+    # Collect eligible names in this file via AST
+    names_in_file = _collect_names_ast(src_path, exts)
+    if not names_in_file:
+        # AST failed or found none; fall back to global (regex-only)
+        return rename_global
 
-    return changed_files, total_repl
+    # Filter to the subset
+    subset = {old:new for old,new in rename_global.items() if old in names_in_file}
+    # If AST subset ends up empty (e.g., AST missed due to macros), fall back to global
+    return subset or rename_global
 
-def humanize_tree_regex(src_dir: Path, out_dir: Path, mapping: Dict[str, str]) -> Tuple[int,int]:
-    subs = compile_subs(mapping)
-    files = [p for p in src_dir.rglob("*.c")] + [p for p in src_dir.rglob("*.h")]
-    changed_files = 0
-    total = len(files)
-    total_repl = 0
-
-    for i, path in enumerate(files, 1):
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        new_text, counts = rewrite_file_text_regex(text, subs)
-        if new_text != text:
-            out_path = out_dir / path.relative_to(src_dir)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(new_text, encoding="utf-8")
-        else:
-            out_path = out_dir / path.relative_to(src_dir)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(text, encoding="utf-8")
-
-        total_repl += sum(counts.values())
-        changed_files += 1
-        if (i % max(1, total // 25) == 0) or (i == total):
-            print(f"[humanize] progress {i}/{total}")
-    return changed_files, total_repl
-
-def write_change_log(out_dir: Path, mapping: Dict[str, str], changed_files: int, total_repl: int) -> None:
-    logp = out_dir / "_humanize_changes.md"
-    lines: List[str] = []
-    lines.append("# Humanize Change Log\n")
-    lines.append("## Rename mapping\n")
-    for old, new in mapping.items():
-        lines.append(f"- `{old}` → `{new}`")
-    lines.append(f"\nFiles changed: {changed_files}\n")
-    lines.append(f"Approximate replacements: {total_repl}\n")
-    logp.write_text("\n".join(lines), encoding="utf-8")
-
-def main():
+# ------------- main -------------
+def main() -> int:
     ap = argparse.ArgumentParser(description="Humanize recovered C source by applying LLM-suggested function names")
-    ap.add_argument("--src-dir", required=True, help="Path to recovered source (root containing .c/.h)")
-    ap.add_argument("--out-dir", required=True, help="Path to write the humanized source tree")
-    ap.add_argument("--mapping", required=True, help="JSON or JSONL with rename pairs")
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--src-dir", required=True, help="Input source tree (recovered_project/src)")
+    ap.add_argument("--out-dir", required=True, help="Output tree for humanized source")
+    ap.add_argument("--mapping", required=True, help="functions.labeled.jsonl")
+    ap.add_argument("--ext", default=".c,.h", help="Comma-separated extensions to process (default: .c,.h)")
+    ap.add_argument("--dry-run", action="store_true", help="Do not write files")
     args = ap.parse_args()
 
     src_dir = Path(args.src_dir).resolve()
     out_dir = Path(args.out_dir).resolve()
-    mapping_path = Path(args.mapping).resolve()
+    mapping = Path(args.mapping).resolve()
+    exts = tuple([e if e.startswith(".") else f".{e}" for e in args.ext.split(",") if e.strip()])
 
-    # load mapping + labels for param hints
-    mapping, labelinfo = load_labels_and_mapping(mapping_path)
-    if not mapping:
-        print(f"[humanize] no valid rename pairs found in: {mapping_path}", file=sys.stderr)
-        return 2
-    mapping = resolve_collisions(mapping)
+    if not src_dir.exists():
+        print(f"[humanize] src not found: {src_dir}")
+        return 1
+    if not mapping.exists():
+        print(f"[humanize] mapping not found: {mapping}")
+        return 1
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    shutil.copytree(src_dir, out_dir)
+    # build global rename map with guard
+    rename_global = build_rename_map(mapping)
+    if not rename_global:
+        print("[humanize] no renames in mapping (nothing to do)")
+        # still mirror tree to out_dir for consistency
+        if not args.dry_run:
+            for p in list_source_files(src_dir, exts):
+                dst = ensure_out_path(out_dir, src_dir, p)
+                if not dst.exists():
+                    shutil.copy2(p, dst)
+        return 0
 
-    if PARSER_OK:
-        changed, repl = humanize_tree_ast(src_dir, out_dir, mapping, labelinfo)
-    else:
-        changed, repl = humanize_tree_regex(src_dir, out_dir, mapping)
+    files = list_source_files(src_dir, exts)
+    total = len(files)
+    if total == 0:
+        print("[humanize] no source files found")
+        return 0
 
-    write_change_log(out_dir, mapping, changed, repl)
-    print("[humanize] files changed:", changed)
-    print("[humanize] approx replacements:", repl)
+    resume = os.getenv("HUMANIZE_RESUME","1").lower() in ("1","true","yes","on")
+    start_idx = read_progress() if resume else -1
+    done = max(0, start_idx + 1)
+    t0 = time.time()
+
+    for i, src in enumerate(files):
+        if i <= start_idx:
+            continue
+        dst = ensure_out_path(out_dir, src_dir, src)
+
+        # skip if resume and already processed newer than inputs
+        if resume and dst.exists():
+            try:
+                if dst.stat().st_mtime >= max(src.stat().st_mtime, mapping.stat().st_mtime):
+                    write_progress(i)
+                    done += 1
+                    pct = int(100 * done / total)
+                    elapsed = int(time.time() - t0)
+                    print(f"[humanize] progress {done}/{total} | {pct}% | elapsed {elapsed}s")
+                    continue
+            except Exception:
+                pass
+
+        text = src.read_text(encoding="utf-8", errors="ignore")
+
+        # AST-assisted per-file refinement (graceful fallback inside)
+        local_map = refine_rename_for_file(src, rename_global, exts)
+
+        new_text, n = rename_in_text(text, local_map)
+
+        if args.dry_run:
+            pass
+        else:
+            if new_text == text:
+                # mirror to keep output tree complete
+                shutil.copy2(src, dst)
+            else:
+                dst.write_text(new_text, encoding="utf-8")
+
+        write_progress(i)
+        done += 1
+        pct = int(100 * done / total)
+        elapsed = int(time.time() - t0)
+        mode = "AST" if HUMANIZE_AST else "regex"
+        print(f"[humanize] progress {done}/{total} | {pct}% | elapsed {elapsed}s (renamed {n}, mode={mode})")
+
+    clear_progress()
+    print(f"[humanize] wrote: {out_dir}")
     return 0
 
 if __name__ == "__main__":
