@@ -57,8 +57,11 @@ def detect_signatures(p: Path) -> dict:
         # 7z/RAR/CAB — rely on external tools if present
         if shutil.which("7z"):
             try:
-                subprocess.run(["7z","l",str(p)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-                sig["seven_sfx"] = True
+                # Check if 7z can list the file AND it's not just a regular PE
+                result = subprocess.run(["7z","l",str(p)], capture_output=True, text=True, check=True)
+                # Only consider it 7z SFX if it contains actual archive entries, not just PE sections
+                if "Type = 7z" in result.stdout or ("Type = " in result.stdout and "Type = PE" not in result.stdout):
+                    sig["seven_sfx"] = True
             except Exception:
                 pass
         if b"Rar!\x1a\x07" in data[:16]:

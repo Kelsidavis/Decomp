@@ -232,7 +232,7 @@ def enrich(funcs: List[Dict[str, Any]], bin_path: Path) -> None:
             try:
                 j = json.loads(out)
                 strings = []
-                for sec in ("stack_strings","decoded_strings","static_strings"):
+                for sec in ("stack_strings","decoded_strings","strings"):
                     for srec in (j.get(sec) or [])[:FLOSS_PER_FN]:
                         s = srec.get("string") if isinstance(srec, dict) else srec
                         if isinstance(s, str): strings.append(s[:120])
