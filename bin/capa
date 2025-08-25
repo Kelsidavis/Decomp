@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
-: "${CAPA_RULES:?Set CAPA_RULES (e.g., projectroot/rules/capa)}"
-[[ -d "$CAPA_RULES" ]] || { echo "ERROR: CAPA_RULES not a directory: $CAPA_RULES" >&2; exit 2; }
-# If caller already passed -r/--rules, don't duplicate
-for a in "$@"; do [[ "$a" == "-r" || "$a" == "--rules" ]] && exec python3 -m capa.main "$@"; done
-exec python3 -m capa.main -r "$CAPA_RULES" "$@"
+set -Eeuo pipefail
+: "${CAPA_RULES:=rules/capa}"
+: "${CAPA_SIGNATURES:=rules/sigs}"
+exec python3 -m capa.main -r "$CAPA_RULES" --signatures "$CAPA_SIGNATURES" "$@"
+

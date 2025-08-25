@@ -30,17 +30,18 @@ _on_exit() {
 trap _on_error ERR
 trap _on_exit  EXIT
 
-# ---- Rules directories (project-root/rules) ----
+# ---- Rules & signatures (project-root/rules) ----
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
 RULES_DIR="${RULES_DIR:-$PROJECT_ROOT/rules}"
 
 : "${CAPA_RULES:=$RULES_DIR/capa}"
 : "${YARA_RULES_DIR:=$RULES_DIR/yara}"
-export CAPA_RULES YARA_RULES_DIR
+: "${CAPA_SIGNATURES:=$RULES_DIR/sigs}"   # capa "sigs" bundle (library/function IDs)
+export CAPA_RULES YARA_RULES_DIR CAPA_SIGNATURES
 
-# Force python -m capa to see our rules
-export CAPA_DATADIR="$CAPA_RULES"
+# Force python -m capa to see our data files (helps some versions)
+export CAPA_DATADIR="$CAPA_SIGNATURES"
 
 # Make sure our wrappers win
 export PATH="$PROJECT_ROOT/bin:$PATH"
@@ -49,22 +50,41 @@ export PATH="$PROJECT_ROOT/bin:$PATH"
   echo "[diag] PATH prefix: $PROJECT_ROOT/bin"
   echo "[diag] capa -> $(command -v capa)"
   echo "[diag] yara -> $(command -v yara)"
-  echo "[diag] CAPA_RULES=$CAPA_RULES  CAPA_DATADIR=$CAPA_DATADIR  YARA_RULES_DIR=$YARA_RULES_DIR"
+  echo "[diag] CAPA_RULES=$CAPA_RULES"
+  echo "[diag] CAPA_SIGNATURES=$CAPA_SIGNATURES"
+  echo "[diag] CAPA_DATADIR=$CAPA_DATADIR"
+  echo "[diag] YARA_RULES_DIR=$YARA_RULES_DIR"
 } | _fmt | tee -a "$RUN_LOG"
 echo "[full_run] CAPA_RULES=${CAPA_RULES}"
 echo "[full_run] YARA_RULES_DIR=${YARA_RULES_DIR}"
+echo "[full_run] CAPA_SIGNATURES=${CAPA_SIGNATURES}"
 
-: "${BOOTSTRAP_RULES:=0}"   # set to 1 to auto-clone rules on first run
+: "${BOOTSTRAP_RULES:=0}"   # set to 1 to auto-clone rules/signatures on first run
 if [[ "$BOOTSTRAP_RULES" == "1" ]]; then
   [[ -d "$CAPA_RULES/.git" ]] || { mkdir -p "$CAPA_RULES"; git clone --depth=1 https://github.com/mandiant/capa-rules "$CAPA_RULES"; }
   [[ -d "$YARA_RULES_DIR/.git" ]] || { mkdir -p "$YARA_RULES_DIR"; git clone --depth=1 https://github.com/Yara-Rules/rules "$YARA_RULES_DIR"; }
+  # fetch capa signatures (sparse checkout of only sigs/)
+  if [[ ! -d "$CAPA_SIGNATURES" || -z "$(ls -A "$CAPA_SIGNATURES" 2>/dev/null)" ]]; then
+    echo "[rules] fetching capa signatures into $CAPA_SIGNATURES" | _fmt | tee -a "$RUN_LOG"
+    tmpdir="$(mktemp -d)"
+    git -C "$tmpdir" clone --depth=1 --filter=blob:none --sparse https://github.com/mandiant/capa
+    git -C "$tmpdir/capa" sparse-checkout set sigs
+    mkdir -p "$CAPA_SIGNATURES"
+    rsync -a "$tmpdir/capa/sigs/" "$CAPA_SIGNATURES/" 2>/dev/null || cp -R "$tmpdir/capa/sigs/." "$CAPA_SIGNATURES/"
+    rm -rf "$tmpdir"
+  fi
 fi
 
-# Gracefully disable CAPA/YARA when rules are missing
+# Gracefully disable CAPA/YARA when inputs are missing
 : "${ENABLE_CAPA:=1}"
 : "${ENABLE_YARA:=1}"
 if [[ "$ENABLE_CAPA" == "1" && ! -d "$CAPA_RULES" ]]; then
   echo "[full_run] WARN: CAPA_RULES not found at '$CAPA_RULES' → disabling CAPA." | tee -a "$RUN_LOG"
+  ENABLE_CAPA=0
+fi
+# also require signatures for capa
+if [[ "$ENABLE_CAPA" == "1" && ( ! -d "$CAPA_SIGNATURES" || -z "$(ls -A "$CAPA_SIGNATURES" 2>/dev/null)" ) ]]; then
+  echo "[full_run] WARN: CAPA_SIGNATURES missing/empty at '$CAPA_SIGNATURES' → disabling CAPA." | tee -a "$RUN_LOG"
   ENABLE_CAPA=0
 fi
 if [[ "$ENABLE_YARA" == "1" && ! -d "$YARA_RULES_DIR" ]]; then
@@ -72,9 +92,8 @@ if [[ "$ENABLE_YARA" == "1" && ! -d "$YARA_RULES_DIR" ]]; then
   ENABLE_YARA=0
 fi
 
- # ---- FLOSS timeout (seconds) ----
-
-: "${FLOSS_TIMEOUT:=10}"
+# ---- FLOSS timeout (seconds) ----
+: "${FLOSS_TIMEOUT:=600}"
 export FLOSS_TIMEOUT
 # run_autodiscover.py reads HUNT_FLOSS_TIMEOUT, so mirror it here
 : "${HUNT_FLOSS_TIMEOUT:=${FLOSS_TIMEOUT}}"
@@ -297,7 +316,7 @@ fi
 # -------------------- analyze (label) with LLM4Decompile --------------------
 stage "analyze(label) with profile: ${LLM_PROFILE_LABEL}"; start_hb
 use_profile "$LLM_PROFILE_LABEL"
-export HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS
+export HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS CAPA_SIGNATURES
 stdbuf -oL -eL python3 tools/function_hunt/run_autodiscover.py 2>&1 | _fmt | tee -a "$RUN_LOG"
 stop_hb; stage_done
 
