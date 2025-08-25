@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
-# Ensure capa always uses project rules
 set -euo pipefail
-
-: "${CAPA_RULES:?Set CAPA_RULES to your rules directory (e.g., projectroot/rules/capa)}"
+: "${CAPA_RULES:?Set CAPA_RULES (e.g., projectroot/rules/capa)}"
 if [[ ! -d "$CAPA_RULES" ]]; then
-  echo "ERROR: CAPA_RULES does not exist: $CAPA_RULES" >&2
-  exit 2
+  echo "ERROR: CAPA_RULES not a directory: $CAPA_RULES" >&2; exit 2
 fi
-
-# If caller already provided -r/--rules, don't add another
-for a in "$@"; do
-  [[ "$a" == "-r" || "$a" == "--rules" ]] && exec python3 -m capa.main "$@"
-done
-
+# If caller already passed -r/--rules, don't duplicate
+for a in "$@"; do [[ "$a" == "-r" || "$a" == "--rules" ]] && exec python3 -m capa.main "$@"; done
 exec python3 -m capa.main -r "$CAPA_RULES" "$@"

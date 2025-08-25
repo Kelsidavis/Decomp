@@ -35,6 +35,8 @@ RULES_DIR="${RULES_DIR:-$PROJECT_ROOT/rules}"
 : "${CAPA_RULES:=$RULES_DIR/capa}"
 : "${YARA_RULES_DIR:=$RULES_DIR/yara}"
 export CAPA_RULES YARA_RULES_DIR
+export CAPA_DATADIR="$CAPA_RULES"
+echo "[full_run] CAPA_DATADIR=${CAPA_DATADIR}"
 
 # Ensure our wrappers (e.g., bin/capa) are found first
 export PATH="$PROJECT_ROOT/bin:$PATH"

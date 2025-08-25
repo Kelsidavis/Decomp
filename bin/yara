@@ -1,36 +1,31 @@
 #!/usr/bin/env bash
-# Accept YARA_RULES_DIR as a directory; resolve to a file or glob
 set -euo pipefail
-
-REAL_YARA="${YARA_REAL_BIN:-/usr/bin/yara}"
-if [[ ! -x "$REAL_YARA" ]]; then
-  # Try to locate a system yara that's not this wrapper
-  for cand in /usr/bin/yara /usr/local/bin/yara "$(command -v yara || true)"; do
-    [[ -n "$cand" && -x "$cand" && "$(readlink -f "$cand")" != "$(readlink -f "$0")" ]] && REAL_YARA="$cand" && break
-  done
+REAL_YARA="${YARA_REAL_BIN:-$(command -v yara || true)}"
+# Avoid recursion if this wrapper is first on PATH
+if [[ -z "$REAL_YARA" || "$(readlink -f "$REAL_YARA")" == "$(readlink -f "$0")" ]]; then
+  REAL_YARA="/usr/bin/yara"
 fi
 
+# If first non-flag arg is a directory, expand it to index.yar or *.yar
 args=()
-rules_arg=""
+did_rules=0
 for a in "$@"; do
-  if [[ -z "$rules_arg" ]]; then
-    rules_arg="$a"
-    if [[ -d "$rules_arg" ]]; then
-      if [[ -f "$rules_arg/index.yar" ]]; then
-        rules_arg="$rules_arg/index.yar"
+  if [[ $did_rules -eq 0 && ! "$a" =~ ^- ]]; then
+    did_rules=1
+    if [[ -d "$a" ]]; then
+      if [[ -f "$a/index.yar" ]]; then
+        args+=( "$a/index.yar" )
       else
         shopt -s nullglob
-        files=( "$rules_arg"/*.yar "$rules_arg"/*/*.yar )
+        files=( "$a"/*.yar "$a"/*/*.yar )
         shopt -u nullglob
-        (( ${#files[@]} )) || { echo "ERROR: no .yar files under $YARA_RULES_DIR" >&2; exit 2; }
-        # Expand the directory into a glob list
+        (( ${#files[@]} )) || { echo "ERROR: no .yar files under $a" >&2; exit 2; }
         exec "$REAL_YARA" "${files[@]}" "${@:2}"
       fi
+      continue
     fi
-    args+=( "$rules_arg" )
-  else
-    args+=( "$a" )
   fi
+  args+=( "$a" )
 done
 
 exec "$REAL_YARA" "${args[@]}"
