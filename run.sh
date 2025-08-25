@@ -1,219 +1,25 @@
 #!/usr/bin/env bash
-# run.sh — main wrapper: autodiscover binary, pre-unpack SFX/packed, then run pipeline
+# run.sh — convenience wrapper; builds exporter image (if needed) and runs full pipeline
 set -euo pipefail
 
-# ---------------- Env defaults ----------------
-: "${WORK_DIR:=work}"
-: "${LLM_ENDPOINT:=http://127.0.0.1:8080/v1/chat/completions}"
-: "${LLM_MODEL:=Qwen3-14B-UD-Q5_K_XL.gguf}"
-: "${HUNT_TOPN:=1000}"
-: "${HUNT_MIN_SIZE:=0}"
-: "${HUNT_CACHE:=1}"
-: "${HUNT_RESUME:=1}"
-: "${ENABLE_CAPA:=1}"
-: "${ENABLE_YARA:=1}"
-: "${ENABLE_FLOSS:=1}"
+: "${GHIDRA_IMAGE:=decomp-ghidra-llm:latest}"
 
-# humanize/reimplement toggles (can be overridden via CLI)
-WITH_HUMANIZE=1
-WITH_REIMPL=0
-DO_PREFLIGHT=1
-RESET_RUN=0
-USER_BIN=""
-
-# ---------------- CLI ----------------
-usage() {
-  cat <<EOF
-Usage: $0 [options]
-
-Options:
-  --no-preflight        Skip preflight checks
-  --analyze-only        Do not run humanize/reimplement (only generate mapping)
-  --with-reimplement    After humanize, run reimplement
-  --reset-run           Clear previous mapping/progress before run
-  --bin <path>          Use this binary explicitly (skips autodiscovery)
-  --topn <N>            Override HUNT_TOPN (default: $HUNT_TOPN)
-  --min-size <N>        Override HUNT_MIN_SIZE (default: $HUNT_MIN_SIZE)
-  -h|--help             Show this help
-EOF
+build_image_if_missing() {
+  if ! docker image inspect "$GHIDRA_IMAGE" >/dev/null 2>&1; then
+    echo "[run] building Ghidra exporter image: $GHIDRA_IMAGE"
+    docker build -t "$GHIDRA_IMAGE" -f Dockerfile .
+  fi
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --no-preflight) DO_PREFLIGHT=0; shift ;;
-    --analyze-only) WITH_HUMANIZE=0; WITH_REIMPL=0; shift ;;
-    --with-reimplement) WITH_REIMPL=1; shift ;;
-    --reset-run) RESET_RUN=1; shift ;;
-    --bin) USER_BIN="${2:-}"; shift 2 ;;
-    --topn) export HUNT_TOPN="${2:-$HUNT_TOPN}"; shift 2 ;;
-    --min-size) export HUNT_MIN_SIZE="${2:-$HUNT_MIN_SIZE}"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "[warn] unknown arg: $1" >&2; shift ;;
-  esac
-done
-
-# ---------------- Setup ----------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
-mkdir -p "$WORK_DIR/logs"
-STAMP="$(date +%Y%m%d-%H%M%S)"
-RUN_LOG="$WORK_DIR/logs/run.${STAMP}.log"
-
-# tee all output into a timestamped log
-exec > >(stdbuf -oL -eL tee -a "$RUN_LOG") 2>&1
-
-echo "==============================================="
-echo " Decomp pipeline"
-echo " Timestamp:   $STAMP"
-echo " Log:         $RUN_LOG"
-echo " Work dir:    $WORK_DIR"
-echo " LLM:         $LLM_MODEL @ $LLM_ENDPOINT"
-echo " HUNT_TOPN:   ${HUNT_TOPN}"
-echo " HUNT_MIN:    ${HUNT_MIN_SIZE}"
-echo " Resume:      ${HUNT_RESUME}   Cache: ${HUNT_CACHE}"
-echo " CAPA/YARA:   ${ENABLE_CAPA}/${ENABLE_YARA}   FLOSS: ${ENABLE_FLOSS}"
-echo " Humanize:    ${WITH_HUMANIZE}   Reimplement: ${WITH_REIMPL}"
-echo "==============================================="
-
-# optional preflight
-if (( DO_PREFLIGHT )); then
-  if command -v python3 >/dev/null 2>&1; then
-    python3 tools/preflight.py --full || echo "[preflight] continuing despite warnings"
-  else
-    echo "[preflight] python3 not found; skipping"
-  fi
-fi
-
-# optional reset
-if (( RESET_RUN )); then
-  rm -f "$WORK_DIR/hunt/functions.labeled.jsonl" \
-        "$WORK_DIR/hunt/label.progress" \
-        "$WORK_DIR/humanize.progress" \
-        "$WORK_DIR/reimpl.progress"
-  echo "[reset] cleared mapping/progress files"
-fi
-
-# make sure child tools see these
-export WORK_DIR LLM_ENDPOINT LLM_MODEL HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS
-
-# ---------------- Autodiscover primary binary (work/ root only) ----------------
-discover_bin() {
-  local root="$WORK_DIR"
-  local cand=""
-
-  # 0) explicit user bin
-  if [[ -n "$USER_BIN" && -f "$USER_BIN" ]]; then
-    printf '%s\n' "$USER_BIN"; return 0
-  fi
-
-  # 1) env var from caller
-  if [[ -n "${HUNT_BIN:-}" && -f "$HUNT_BIN" ]]; then
-    printf '%s\n' "$HUNT_BIN"; return 0
-  fi
-
-  # 2) previous pre-unpack choice
-  if [[ -f "$root/primary_bin.txt" ]]; then
-    cand="$(<"$root/primary_bin.txt")"
-    if [[ -f "$cand" ]]; then
-      printf '%s\n' "$cand"; return 0
-    fi
-  fi
-
-  # 3) scan work/ root for likely PE and pick largest
-  local best="" best_size=0
-  shopt -s nullglob
-  for f in "$root"/*; do
-    [[ -f "$f" ]] || continue
-    case "${f,,}" in
-      *.exe|*.dll|*.bin) : ;;
-      *) continue ;;
-    esac
-    # quick PE check (MZ + plausible e_lfanew)
-    if python3 - "$f" <<'PY'
-import sys
-p=sys.argv[1]
-try:
-    with open(p,'rb') as fh:
-        d=fh.read(0x100)
-    if d[:2] != b'MZ': raise SystemExit(1)
-    if len(d) < 0x40: raise SystemExit(1)
-    e = int.from_bytes(d[0x3C:0x40], 'little')
-    if e <= 0 or e > 100_000_000: raise SystemExit(1)
-    raise SystemExit(0)
-except SystemExit as e:
-    raise
-except Exception:
-    raise SystemExit(1)
-PY
-    then
-      size=$(stat -c%s "$f" 2>/dev/null || wc -c <"$f")
-      if (( size > best_size )); then best="$f"; best_size=$size; fi
-    fi
-  done
-  shopt -u nullglob
-
-  [[ -n "$best" ]] && printf '%s\n' "$best" || return 1
-}
-
-BIN="$(discover_bin || true)"
-if [[ -n "$BIN" ]]; then
-  export HUNT_BIN="$BIN"
-  echo "[run] autodiscovered binary: $HUNT_BIN"
-  # Pre-unpack SFX/packed (ZIP/7z/RAR/CAB; UPX), choose primary payload
-  if command -v python3 >/dev/null 2>&1; then
-    python3 tools/pre_unpack.py --bin "$HUNT_BIN" --out "$WORK_DIR/extracted" --work "$WORK_DIR" || true
-    if [[ -f "$WORK_DIR/primary_bin.txt" ]]; then
-      export HUNT_BIN="$(<"$WORK_DIR/primary_bin.txt")"
-      echo "[run] using unpacked primary: $HUNT_BIN"
-    fi
-  else
-    echo "[run] WARN: python3 missing; skipping pre-unpack"
-  fi
-else
-  echo "[run] WARN: no candidate binary found at $WORK_DIR root (looked for *.exe|*.dll|*.bin)."
-fi
-
-# sanity
-if [[ -z "${HUNT_BIN:-}" || ! -f "$HUNT_BIN" ]]; then
-  echo "[run] ERROR: no input binary. Place it at $WORK_DIR/ (root), or pass --bin <path>."
-  exit 2
-fi
-
-# ---------------- Run analysis + (optional) humanize/reimplement ----------------
-# The analyze+humanize pipeline is handled by humanize.sh (which calls run_autodiscover.py)
-# We pass through environment + logging.
-
-if (( WITH_HUMANIZE )); then
-  echo "[run] starting humanize pipeline…"
-  ./humanize.sh || { echo "[run] humanize failed"; exit 1; }
-else
-  echo "[run] analyze only (no humanize/reimplement)…"
-  # If you want analyze-only without humanize.sh, uncomment:
-  # python3 tools/function_hunt/run_autodiscover.py
-fi
-
-if (( WITH_REIMPL )); then
-  echo "[run] starting re-implementation…"
-  # Re-implement using humanized src as input
-  JSONL="$WORK_DIR/hunt/functions.labeled.jsonl"
-  SRC_HUMAN="$WORK_DIR/recovered_project_human/src"
-  OUT_REIMPL="$WORK_DIR/recovered_project_reimpl"
-  if [[ ! -s "$JSONL" ]]; then
-    echo "[run] ERROR: mapping not found ($JSONL). Did analyze/humanize complete?"
-    exit 3
-  fi
-  if [[ ! -d "$SRC_HUMAN" ]]; then
-    echo "[run] ERROR: humanized source not found ($SRC_HUMAN)"
-    exit 3
-  fi
-  python3 tools/reimplement.py \
-    --src-dir "$SRC_HUMAN" \
-    --out-dir "$OUT_REIMPL" \
-    --mapping "$JSONL" \
-    --threshold "${REIMPL_THRESHOLD:-0.78}" \
-    --max-fns "${REIMPL_MAX_FNS:-120}"
-fi
-
-echo "[run] done. Log: $RUN_LOG"
+case "${1:-}" in
+  build-image)
+    build_image_if_missing
+    echo "[run] image ready: $GHIDRA_IMAGE"
+    ;;
+  *)
+    # Default: run full pipeline (auto-detects local GHIDRA_HOME; falls back to docker image)
+    build_image_if_missing || true
+    exec ./full_run.sh "${@}"
+    ;;
+esac
 

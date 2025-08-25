@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# full_run.sh — end-to-end: autodiscover → pre-unpack → analyze+humanize → reimplement
+# full_run.sh — end-to-end: autodiscover → pre-unpack → ensure export → analyze+humanize → (optional) reimplement
 set -euo pipefail
 
 # --------------- Defaults ---------------
@@ -19,11 +19,16 @@ set -euo pipefail
 # Re-implementation defaults
 : "${REIMPL_THRESHOLD:=0.78}"
 : "${REIMPL_MAX_FNS:=120}"
-: "${REIMPL:=1}"   # keep enabled by default as in your current script
+: "${REIMPL:=1}"
 
-# AST fake headers (vendored by default)
+# AST fake headers (vendored or provided by you)
 : "${FAKE_LIBC_DIR:=$PWD/tools/fake_libc_include}"
 export FAKE_LIBC_DIR
+
+# Ghidra export settings
+: "${GHIDRA_IMAGE:=decomp-ghidra-llm:latest}"   # slim exporter image
+: "${GHIDRA_TIMEOUT:=1800}"                      # seconds
+: "${GHIDRA_SCRIPT:=simple_export.py}"           # exporter script file name
 
 DO_PREFLIGHT=1
 RESET_RUN=0
@@ -62,13 +67,24 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-mkdir -p "$WORK_DIR/logs"
+mkdir -p "$WORK_DIR/logs" "$WORK_DIR/snapshots"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_LOG="$WORK_DIR/logs/full_run.${STAMP}.log"
 
-# Make sure children inherit these (fixes preflight LLM warning)
+# Export core env for children
 export WORK_DIR LLM_ENDPOINT LLM_MODEL HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS
 export REIMPL_THRESHOLD REIMPL_MAX_FNS
+
+# --------------- Ghidra script dir autodetect ---------------
+if [[ -d "ghidra_scripts" && -f "ghidra_scripts/${GHIDRA_SCRIPT}" ]]; then
+  GHIDRA_SCRIPT_DIR="ghidra_scripts"
+elif [[ -d "tools/ghidra_scripts" && -f "tools/ghidra_scripts/${GHIDRA_SCRIPT}" ]]; then
+  GHIDRA_SCRIPT_DIR="tools/ghidra_scripts"
+else
+  echo "[full] ERROR: cannot find ${GHIDRA_SCRIPT} in ghidra_scripts/ or tools/ghidra_scripts/" >&2
+  exit 2
+fi
+export GHIDRA_SCRIPT GHIDRA_SCRIPT_DIR
 
 # --------------- Formatter (timestamps + progress + heartbeat + stage timings) ---------------
 have_gawk=0; command -v gawk >/dev/null 2>&1 && have_gawk=1
@@ -99,7 +115,8 @@ _ts_format_sh() {
   while IFS= read -r line; do
     local now ts; now=$(date +%s); ts="$(date +%T)"
     if [[ "$line" =~ \[(llm|humanize|reimpl)\]\ progress[[:space:]]+([0-9]+)/([0-9]+) ]]; then
-      local done="${BASH_REMATCH[2]}" total="${BASH_REMATCH[3]}"
+      local done="${BASHREMATCH[2]:-${BASH_REMATCH[2]}}"
+      local total="${BASHREMATCH[3]:-${BASH_REMATCH[3]}}"
       local elapsed=$((now-start_epoch))
       local pct=0; (( total > 0 )) && pct=$(( 100*done / total ))
       local remain=-1
@@ -125,17 +142,18 @@ _fmt() { if (( have_gawk )); then _ts_format_gawk; else _ts_format_sh; fi }
   echo " HUNT_TOPN:     ${HUNT_TOPN}   HUNT_MIN: ${HUNT_MIN_SIZE}"
   echo " Resume/Cache:  ${HUNT_RESUME}/${HUNT_CACHE}"
   echo " CAPA/YARA:     ${ENABLE_CAPA}/${ENABLE_YARA}   FLOSS: ${ENABLE_FLOSS}"
+  echo " Export script: ${GHIDRA_SCRIPT_DIR}/${GHIDRA_SCRIPT}"
   echo " REIMPL:        threshold=${REIMPL_THRESHOLD}  max_fns=${REIMPL_MAX_FNS}"
   echo "================================================"
 } | tee -a "$RUN_LOG"
 
 # --------------- Preflight ---------------
 if (( DO_PREFLIGHT )); then
-  if command -v python3 >/dev/null 2>&1; then
+  if command -v python3 >/dev/null 2>&1 && [[ -f "tools/preflight.py" ]]; then
     stdbuf -oL -eL python3 tools/preflight.py --full --strict \
       2>&1 | _fmt | tee -a "$RUN_LOG"
   else
-    echo "[preflight] python3 not found; skipping" | tee -a "$RUN_LOG"
+    echo "[preflight] tools/preflight.py not found or python3 missing; skipping" | tee -a "$RUN_LOG"
   fi
 fi
 
@@ -196,7 +214,7 @@ export HUNT_BIN="$BIN"
 echo "[full] autodiscovered binary: $HUNT_BIN" | tee -a "$RUN_LOG"
 
 # --------------- Pre-unpack SFX/packed → choose primary payload ---------------
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 >/dev/null 2>&1 && [[ -f "tools/pre_unpack.py" ]]; then
   stdbuf -oL -eL python3 tools/pre_unpack.py --bin "$HUNT_BIN" --out "$WORK_DIR/extracted" --work "$WORK_DIR" \
     2>&1 | _fmt | tee -a "$RUN_LOG" || true
   if [[ -f "$WORK_DIR/primary_bin.txt" ]]; then
@@ -204,13 +222,65 @@ if command -v python3 >/dev/null 2>&1; then
     echo "[full] using unpacked primary: $HUNT_BIN" | tee -a "$RUN_LOG"
   fi
 else
-  echo "[full] WARN: python3 missing; skipping pre-unpack" | tee -a "$RUN_LOG"
+  echo "[full] NOTE: tools/pre_unpack.py not found or python3 missing; continuing with $HUNT_BIN" | tee -a "$RUN_LOG"
 fi
 
 if [[ ! -f "$HUNT_BIN" ]]; then
   echo "[full] ERROR: input binary not found after pre-unpack: $HUNT_BIN" | tee -a "$RUN_LOG"
   exit 3
 fi
+
+# --------------- Ensure Ghidra export (*_out.json) ---------------
+ensure_target_out() {
+  local base out
+  base="$(basename "${HUNT_BIN%.*}")"
+  out="$WORK_DIR/snapshots/${base}_out.json"
+
+  # If already present and non-empty, keep it
+  if [[ -s "$out" ]]; then printf '%s\n' "$out"; return 0; fi
+
+  echo "[full] no *_out.json found — invoking Ghidra exporter…" | tee -a "$RUN_LOG"
+  mkdir -p "$WORK_DIR/gh_proj" "$WORK_DIR/snapshots"
+
+  # Prefer local GHIDRA if available
+  if [[ -n "${GHIDRA_HOME:-}" && -x "$GHIDRA_HOME/support/analyzeHeadless" ]]; then
+    timeout "${GHIDRA_TIMEOUT}" "$GHIDRA_HOME/support/analyzeHeadless" "$WORK_DIR/gh_proj" myproj \
+      -import "$HUNT_BIN" \
+      -scriptPath "$GHIDRA_SCRIPT_DIR" \
+      -postScript "$GHIDRA_SCRIPT" "$out" \
+      -analysisTimeoutPerFile "${GHIDRA_TIMEOUT}" \
+      -deleteProject \
+      2>&1 | _fmt | tee -a "$RUN_LOG"
+  else
+    # Docker fallback (bind mount the script dir as /scripts)
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "[full] ERROR: neither GHIDRA_HOME nor docker present for export" | tee -a "$RUN_LOG"
+      return 1
+    fi
+    docker run --rm \
+      -v "$PWD/$WORK_DIR:/work" \
+      -v "$PWD/$GHIDRA_SCRIPT_DIR:/scripts" \
+      "$GHIDRA_IMAGE" bash -lc "
+        mkdir -p /work/gh_proj /work/snapshots
+        timeout ${GHIDRA_TIMEOUT} \"\$GHIDRA_HOME\"/support/analyzeHeadless /work/gh_proj myproj \
+          -import \"$HUNT_BIN\" \
+          -scriptPath /scripts \
+          -postScript \"$GHIDRA_SCRIPT\" \"/work/snapshots/${base}_out.json\" \
+          -analysisTimeoutPerFile ${GHIDRA_TIMEOUT} \
+          -deleteProject
+      " 2>&1 | _fmt | tee -a "$RUN_LOG"
+  fi
+
+  [[ -s "$out" ]] && printf '%s\n' "$out" || return 1
+}
+
+TARGET_OUT="$(ensure_target_out || true)"
+if [[ -z "${TARGET_OUT:-}" ]]; then
+  echo "[full] ERROR: failed to generate *_out.json; cannot continue." | tee -a "$RUN_LOG"
+  exit 4
+fi
+export HUNT_TARGET_OUT="$TARGET_OUT"
+echo "[full] export ready: $HUNT_TARGET_OUT" | tee -a "$RUN_LOG"
 
 # --------------- Analyze + Humanize ---------------
 echo "[full] starting analyze + humanize…" | tee -a "$RUN_LOG"
@@ -247,6 +317,7 @@ fi
 {
   echo "[full] done."
   echo "Artifacts:"
+  echo "  - export  : $HUNT_TARGET_OUT"
   echo "  - mapping : $JSONL"
   echo "  - human   : $SRC_HUMAN"
   echo "  - reimpl  : $OUT_REIMPL"
