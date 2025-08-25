@@ -1,165 +1,187 @@
-# 🔎 Ghidra-LLM Reverse Engineering Pipeline
+# Decomp — Ghidra + LLM decompilation pipeline
 
-This project bundles **Ghidra (headless mode)**, a set of custom Python scripts, and a connected **LLM endpoint** (e.g. Qwen3, GPT-style models) into a single Docker workflow for semi-automated reverse engineering.
+Decomp wires **Ghidra (headless)**, a set of **Python enrichers**, and a local **LLM server** into a single workflow that can:
 
-The pipeline takes a Windows PE binary (`.exe`), decompiles it, generates human-readable stubs, extracts embedded assets, and scaffolds a compilable project (`C` or `C++`) that you can iterate on.
+* analyze a Windows PE binary (`.exe`)
+* export functions + metadata from Ghidra
+* label/classify functions with an LLM
+* scaffold a compilable project (C/C++)
+* (optionally) re‑implement bodies with another LLM profile
 
----
-
-## 📦 Features
-
-* **Headless Ghidra analysis**
-  Dumps functions, imports, and PE resources.
-
-* **Function Hunt & Humanization**
-  Analyzes functions, filters/dedupes, and calls an LLM to label them.
-  Produces `functions.labeled.jsonl`, rewrites source tree with human-readable names, and writes a `report.md`.
-
-* **LLM explanation**
-  Calls your configured model endpoint to annotate functions with JSON labels, progress %, elapsed time, and ETA in logs.
-
-* **Code scaffolding**
-  Converts the report into compilable stubs (`.c` or `.cpp`).
-
-* **Asset extraction**
-
-  * PE resources (icons, bitmaps).
-  * Magic-based carving from binary.
-  * Embeds assets directly into C code for buildability.
-
-* **Windows build generator**
-  Creates `recovered_project_win/` with CMake files.
-  Links system DLLs, generates dynamic wrappers for vendor DLLs, and builds with MinGW.
-
-* **Enhanced logging**
-  `run.sh`, `humanize.sh`, `reimplement.sh`, and `full_run.sh` now prefix logs with timestamps, show live progress %, elapsed time, and estimated time remaining. Logs are written to `work/logs/` and `work/run.<timestamp>.log`.
+The one‑shot entry point is **`./full_run.sh`**.
 
 ---
 
-## 🚀 Usage
+## Quick start
 
-### 1. Build the image
+### Prereqs
 
-```bash
-docker build -t ghidra-llm:latest .
-```
+* **Docker** (runs the Ghidra headless exporter)
+* **Python 3.10+** on host (`pip install -r requirements.txt` if present)
+* **GPU optional** (local LLM via llama.cpp, controlled by `scripts/llm/llmctl.sh`)
 
-### 2. Place your binary
-
-```
-work/target.exe
-```
-
-### 3. Run the analysis only
+### Build the Ghidra image
 
 ```bash
-./run.sh --exe work/target.exe
+# If BuildKit complains about buildx, either install buildx or use classic builder:
+DOCKER_BUILDKIT=0 docker build --pull --no-cache -t decomp-ghidra-llm:latest .
 ```
 
-This runs headless Ghidra, extracts functions/resources, and generates
-the baseline `recovered_project/`.
+### Place your binary
 
-### 4. Run the full pipeline (analysis → humanize → reimplement)
+```bash
+mkdir -p work
+cp /path/to/target.exe work/
+```
+
+### Start / switch the local LLM
+
+```bash
+# Ensures a single llama.cpp server on :8080 and exports env (LLM_ENDPOINT, LLM_MODEL)
+scripts/llm/llmctl.sh switch llm4d
+```
+
+### Run the full pipeline
 
 ```bash
 ./full_run.sh --exe work/target.exe
 ```
 
-This will:
+Logs: `work/logs/full_run.YYYYmmdd-HHMMSS.log` and `work/logs/latest_full_run.log` (symlink).
 
-* Run the Docker analysis (`run.sh`).
-* Call `humanize.sh` to label and rename functions.
-* Call `reimplement.sh` to synthesize function bodies.
-* Produce three trees:
+---
 
-  * `recovered_project/` → baseline
-  * `recovered_project_human/` → LLM-renamed functions
-  * `recovered_project_impl/` → LLM-reimplemented functions
+## What the pipeline does
 
-### 5. Humanize only (optional re-run)
+1. **pre‑unpack** — unwraps self‑extracting archives / nested binaries (to `work/extracted/`).
+2. **export (docker)** — runs Ghidra headless in a container and writes `*_out.json` into `work/snapshots/`.
+3. **analyze / label** — feeds exported functions to the LLM (profile `LLM_PROFILE_LABEL`) and writes:
 
-```bash
-./humanize.sh --topn 500 --min-size 16
+   * `work/hunt/functions.labeled.jsonl`
+   * `work/hunt/report.md`
+4. **humanize** — optional AST‑safe renaming into `work/recovered_project_human/` using the mapping.
+5. **re‑implement (optional)** — uses profile `LLM_PROFILE_REIMPL` to generate function bodies.
+
+Common output tree:
+
 ```
-
-### 6. Re-implement only (optional re-run)
-
-```bash
-./reimplement.sh
-```
-
----
-
-## ⚙️ Environment Variables
-
-* `BINARY_PATH` – input binary (`.exe`).
-* `OUT_JSON` – path to dump functions JSON.
-* `REPORT_MD` – path for human-readable LLM explanation.
-* `CODE_LANG` – `c`, `cpp`, or `auto` (default).
-* `HUMANIZE_MODE` – `off`, `suggest`, or `apply`.
-* `BUILD_RECOVERED` – `1` to attempt a `make` build of the applied project.
-* `LLM_ENDPOINT` – model API URL (defaults to localhost:8080).
-* `LLM_MODEL` – model name (e.g. `Qwen3-14B-UD-Q5_K_XL.gguf`).
-* `HUNT_TOPN` – number of functions to keep by size.
-* `HUNT_LIMIT` – hard cap on number of functions.
-* `HUNT_MIN_SIZE` – drop functions below N bytes.
-* `HUNT_CAPA`, `HUNT_YARA` – enable/disable enrichment.
-* `HUNT_LLM_CONCURRENCY` – number of concurrent LLM requests.
-* `HUNT_LLM_MAX_TOKENS` – max tokens per function label (increase for more detail, at cost of speed).
-
----
-
-## 📂 Output Layout
-
-* `recovered_project/`
-
-  * `include/` – headers (`recovered.h`, `resources.h`)
-  * `src/` – function stubs + `resources_embedded.c`
-  * `assets/` – extracted icons, bitmaps, carved files
-  * `report.md` – annotated function descriptions
-
-* `work/hunt/`
-
-  * `functions.enriched.jsonl` – enriched with capa/yara.
-  * `functions.labeled.jsonl` – LLM labels (names, tags, inputs/outputs).
-  * `report.md` – human-readable explanations.
-
-* `recovered_project_human/`
-  Humanized project (if enabled).
-
-* `recovered_project_impl/`
-  Re-implemented project with LLM-synthesized function bodies.
-
-* `recovered_project_win/`
-  Windows build scaffold with CMake + vendor shims.
-
-* `run.<timestamp>.log` and `work/logs/pipeline.<timestamp>.log`
-  Full logs with timestamps, % complete, and ETA.
-
----
-
-## 🛠 Building for Windows
-
-```bash
-cd work/recovered_project_win/build
-cmake ..
-make
+work/
+  hunt/
+    functions.labeled.jsonl
+    report.md
+  snapshots/
+    <base>_out.json
+  recovered_project/
+    include/
+    src/
+    assets/
+  recovered_project_human/
+  recovered_project_reimpl/
+  logs/
 ```
 
 ---
 
-## ⚠️ Notes
+## Rules & enrichment (optional but recommended)
 
-* Many stubs will be placeholders until you refine them.
-* Assets may be incomplete if the binary didn’t contain resources.
-* Vendor DLLs (FMOD, DivX, etc.) are stubbed dynamically; you’ll need the SDK for full functionality.
-* Expect to iterate: the goal is a **compilable baseline** close to original source, not a 1:1 decompile.
+You can enrich with **FLOSS** (decoded strings), **CAPA** (behavioral rules), and **YARA**:
+
+```
+rules/
+  capa/   # CAPA rules
+  sigs/   # CAPA signatures pack
+  yara/   # YARA rules
+```
+
+Environment knobs (defaults in parentheses):
+
+* `CAPA_RULES` (`rules/capa`)
+* `CAPA_SIGNATURES` **or** `CAPA_DATADIR` (`rules/sigs`)
+* `YARA_RULES_DIR` (`rules/yara`)
+* `ENABLE_CAPA=1`, `ENABLE_YARA=1`, `ENABLE_FLOSS=1`
+
+If a directory is missing, the stage is disabled gracefully with a WARN.
 
 ---
 
-## 🤍 Next Steps
+## Timeouts & wrappers
 
-* Replace vendor stubs with real SDK headers/libs.
-* Use the LLM-generated docs (`report.md`) and `functions.labeled.jsonl` to re-implement function logic (automated in `reimplement.sh`).
-* Refactor and test: compile → run under Wine/Windows → fix.
+To avoid premature kills and probe races, the pipeline uses small shims and envs:
 
+* `FLOSS_TIMEOUT` (seconds) → FLOSS extraction (also mirrored to `HUNT_FLOSS_TIMEOUT`)
+* `CAPA_TIMEOUT` (seconds)  → CAPA scans
+* `LLM_GRACE` (seconds)     → sleep after spawning the LLM server before the first health probe
+
+**Note:** the repo provides `bin/` wrappers so `timeout`, `capa`, and `yara` resolve via **PATH** and honor these envs. If any code references `/usr/bin/timeout`, replace with `timeout` so the shim is used.
+
+---
+
+## Windows API detection & linking
+
+Decomp includes an API database and resolver to generate declarations and link flags.
+
+* **Signatures DB:** `tools/api_signatures.json`
+
+  * Keeps your **FMOD** + Win32 sets (e.g., `FSOUND_*`, `kernel32`, `user32`).
+  * Can include families/regex (e.g., `^FSOUND_`, `^Nt.*`, `^WSA.*`).
+* **Resolver:** `tools/resolve_external_apis.py`
+
+  * Scans `recovered_project/src` for function identifiers and (optionally) import names from `*_out.json`.
+  * Normalizes Win `A/W` suffixes for matching.
+  * Emits:
+
+    * `work/recovered_project/include/external_apis.h` (extern decls, system/vendor headers)
+    * `work/recovered_project/external_linkage.json` (selected libs, `-l…` flags, headers)
+
+Run manually:
+
+```bash
+python3 tools/resolve_external_apis.py work/recovered_project
+cat work/recovered_project/external_linkage.json
+```
+
+Your build step can read `external_linkage.json` and append `ldflags` to the generated Makefile (Windows: `-lkernel32 -luser32 -lfmod_vc`, etc.).
+
+---
+
+## Key scripts & dirs
+
+* `full_run.sh` — one‑shot pipeline driver
+* `scripts/llm/llmctl.sh` — manage local LLM profiles (start/stop/switch/env)
+* `profiles/` — example model envs used by `llmctl`
+* `ghidra_scripts/` — headless exporter invoked inside the container
+* `tools/` — enrichment & project helpers (autodiscover, humanize, reimplement, API resolver)
+
+---
+
+## Common env knobs
+
+Pipeline / exporter:
+
+* `WORK_DIR` (`work`), `HUNT_TOPN`, `HUNT_MIN_SIZE`, `HUNT_CACHE=1`, `HUNT_RESUME=1`
+* `GHIDRA_IMAGE` (`decomp-ghidra-llm:latest`)
+* `GHIDRA_TIMEOUT` (sec), `EXPORT_FLUSH_EVERY`, `DECOMPILE_SEC`, `EXPORT_TOPN`
+* `SKIP_PSEUDO=0` (1 = metadata‑only export)
+
+LLM / profiles:
+
+* `LLM_PROFILE_LABEL=llm4d`, `LLM_PROFILE_REIMPL=qwen14`
+* `LLM_ENDPOINT`, `LLM_MODEL` (exported by `llmctl env <profile>`)
+* `REIMPL_ENABLE=1`, `REIMPL_MIN_CONF`, `REIMPL_MAX_FNS`
+
+---
+
+## Troubleshooting
+
+* **“Don’t source this script.”** → Run as `./full_run.sh`, not via `.`/`source`.
+* **First probe to :8080 fails.** → Increase `LLM_GRACE` (e.g., `LLM_GRACE=1.2`).
+* **CAPA still stops at 180s.** → Ensure no code calls `/usr/bin/timeout` directly; the PATH shim enforces `CAPA_TIMEOUT`.
+* **BuildKit/buildx error.** → Use `DOCKER_BUILDKIT=0 docker build …` or install Docker buildx.
+
+---
+
+## Contributing
+
+PRs welcome: exporter improvements, new enrichers, rule packs, profile configs, resolver extensions (Linux/macOS, more SDKs). Please keep runs reproducible and prefer small sample binaries for tests.
+
+---
