@@ -27,7 +27,10 @@ def extract_external_function_calls(source_files: List[Path]) -> Dict[str, Set[s
     
     # Known API prefixes and their libraries
     api_prefixes = {
+        # FMOD Audio
         'FSOUND_': 'fmod',
+        
+        # Kernel32 (Windows system)
         'GetCurrentProcess': 'kernel32',
         'GetCurrentThread': 'kernel32', 
         'GetModuleHandle': 'kernel32',
@@ -43,6 +46,12 @@ def extract_external_function_calls(source_files: List[Path]) -> Dict[str, Set[s
         'GetTickCount': 'kernel32',
         'Sleep': 'kernel32',
         'ExitProcess': 'kernel32',
+        'VirtualAlloc': 'kernel32',
+        'VirtualFree': 'kernel32',
+        'GetSystemInfo': 'kernel32',
+        'GetVersionEx': 'kernel32',
+        
+        # User32 (Windows UI)
         'MessageBox': 'user32',
         'CreateWindow': 'user32',
         'FindWindow': 'user32',
@@ -55,6 +64,88 @@ def extract_external_function_calls(source_files: List[Path]) -> Dict[str, Set[s
         'PeekMessage': 'user32',
         'TranslateMessage': 'user32',
         'DispatchMessage': 'user32',
+        
+        # DirectX
+        'Direct3DCreate': 'd3d9',
+        'D3DX': 'd3d9',
+        'DirectSoundCreate': 'dsound',
+        'DirectInputCreate': 'dinput',
+        
+        # OpenGL
+        'gl': 'opengl32',
+        'wgl': 'opengl32',
+        
+        # Networking
+        'WSA': 'ws2_32',
+        'socket': 'ws2_32',
+        'bind': 'ws2_32',
+        'listen': 'ws2_32',
+        'accept': 'ws2_32',
+        'connect': 'ws2_32',
+        'send': 'ws2_32',
+        'recv': 'ws2_32',
+        'sendto': 'ws2_32',
+        'recvfrom': 'ws2_32',
+        'closesocket': 'ws2_32',
+        'shutdown': 'ws2_32',
+        'gethostbyname': 'ws2_32',
+        'inet_': 'ws2_32',
+        'hton': 'ws2_32',
+        'ntoh': 'ws2_32',
+        'select': 'ws2_32',
+        
+        # WinINet
+        'Internet': 'wininet',
+        'Http': 'wininet',
+        
+        # Registry/AdvApi32
+        'Reg': 'advapi32',
+        
+        # GDI32
+        'CreateCompatible': 'gdi32',
+        'SelectObject': 'gdi32',
+        'DeleteDC': 'gdi32',
+        'DeleteObject': 'gdi32',
+        'BitBlt': 'gdi32',
+        'TextOut': 'gdi32',
+        'SetTextColor': 'gdi32',
+        'SetBkColor': 'gdi32',
+        'GetStockObject': 'gdi32',
+        
+        # Shell32
+        'Shell': 'shell32',
+        'SHGet': 'shell32',
+        
+        # OLE32
+        'Co': 'ole32',
+        
+        # WinMM
+        'timeGetTime': 'winmm',
+        'PlaySound': 'winmm',
+        'waveOut': 'winmm',
+        
+        # MSVCRT
+        'malloc': 'msvcrt',
+        'free': 'msvcrt',
+        'realloc': 'msvcrt',
+        'calloc': 'msvcrt',
+        'printf': 'msvcrt',
+        'sprintf': 'msvcrt',
+        'scanf': 'msvcrt',
+        'fopen': 'msvcrt',
+        'fclose': 'msvcrt',
+        'fread': 'msvcrt',
+        'fwrite': 'msvcrt',
+        'fseek': 'msvcrt',
+        'ftell': 'msvcrt',
+        'strcpy': 'msvcrt',
+        'strcat': 'msvcrt',
+        'strlen': 'msvcrt',
+        'strcmp': 'msvcrt',
+        'memcpy': 'msvcrt',
+        'memset': 'msvcrt',
+        'atoi': 'msvcrt',
+        'atof': 'msvcrt',
     }
     
     for source_file in source_files:
@@ -295,7 +386,14 @@ def generate_linkage_info(libraries: Dict[str, Set[str]], output_path: Path):
         "ole32": {"windows": "ole32", "linux": None},
         "oleaut32": {"windows": "oleaut32", "linux": None},
         "uuid": {"windows": "uuid", "linux": None},
-        "winmm": {"windows": "winmm", "linux": None}
+        "winmm": {"windows": "winmm", "linux": None},
+        "d3d9": {"windows": "d3d9", "linux": "GL"},
+        "opengl32": {"windows": "opengl32", "linux": "GL"},
+        "ws2_32": {"windows": "ws2_32", "linux": None},
+        "wininet": {"windows": "wininet", "linux": "curl"},
+        "dsound": {"windows": "dsound", "linux": "asound"},
+        "dinput": {"windows": "dinput", "linux": None},
+        "msvcrt": {"windows": None, "linux": "c"}  # msvcrt is implicit on Windows, explicit libc on Linux
     }
     
     for lib_name, functions in libraries.items():

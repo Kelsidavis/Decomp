@@ -346,6 +346,51 @@
           "signature": "void ExitProcess(UINT uExitCode)",
           "parameters": ["UINT uExitCode"],
           "return_type": "void"
+        },
+        "CreateFileMappingA": {
+          "signature": "HANDLE CreateFileMappingA(HANDLE hFile, LPSECURITY_ATTRIBUTES lpFileMappingAttributes, DWORD flProtect, DWORD dwMaximumSizeHigh, DWORD dwMaximumSizeLow, LPCSTR lpName)",
+          "parameters": ["HANDLE hFile", "LPSECURITY_ATTRIBUTES lpFileMappingAttributes", "DWORD flProtect", "DWORD dwMaximumSizeHigh", "DWORD dwMaximumSizeLow", "LPCSTR lpName"],
+          "return_type": "HANDLE"
+        },
+        "GetCurrentProcess": {
+          "signature": "HANDLE GetCurrentProcess(void)",
+          "parameters": [],
+          "return_type": "HANDLE"
+        },
+        "GetCurrentThread": {
+          "signature": "HANDLE GetCurrentThread(void)",
+          "parameters": [],
+          "return_type": "HANDLE"
+        },
+        "GetProcAddressInternal": {
+          "signature": "FARPROC GetProcAddressInternal(HMODULE hModule, LPCSTR lpProcName)",
+          "parameters": ["HMODULE hModule", "LPCSTR lpProcName"],
+          "return_type": "FARPROC"
+        },
+        "GetSystemInfo": {
+          "signature": "void GetSystemInfo(LPSYSTEM_INFO lpSystemInfo)",
+          "parameters": ["LPSYSTEM_INFO lpSystemInfo"],
+          "return_type": "void"
+        },
+        "GetVersionExA": {
+          "signature": "BOOL GetVersionExA(LPOSVERSIONINFOA lpVersionInformation)",
+          "parameters": ["LPOSVERSIONINFOA lpVersionInformation"],
+          "return_type": "BOOL"
+        },
+        "VirtualAlloc": {
+          "signature": "LPVOID VirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect)",
+          "parameters": ["LPVOID lpAddress", "SIZE_T dwSize", "DWORD flAllocationType", "DWORD flProtect"],
+          "return_type": "LPVOID"
+        },
+        "VirtualFree": {
+          "signature": "BOOL VirtualFree(LPVOID lpAddress, SIZE_T dwSize, DWORD dwFreeType)",
+          "parameters": ["LPVOID lpAddress", "SIZE_T dwSize", "DWORD dwFreeType"],
+          "return_type": "BOOL"
+        },
+        "CompareStringA": {
+          "signature": "int CompareStringA(LCID Locale, DWORD dwCmpFlags, LPCSTR lpString1, int cchCount1, LPCSTR lpString2, int cchCount2)",
+          "parameters": ["LCID Locale", "DWORD dwCmpFlags", "LPCSTR lpString1", "int cchCount1", "LPCSTR lpString2", "int cchCount2"],
+          "return_type": "int"
         }
       }
     },
@@ -418,6 +463,1070 @@
           "signature": "LRESULT DispatchMessage(const MSG *lpMsg)",
           "parameters": ["const MSG *lpMsg"],
           "return_type": "LRESULT"
+        },
+        "DispatchMessageA": {
+          "signature": "LRESULT DispatchMessageA(const MSG *lpMsg)",
+          "parameters": ["const MSG *lpMsg"],
+          "return_type": "LRESULT"
+        },
+        "GetMessageA": {
+          "signature": "BOOL GetMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax)",
+          "parameters": ["LPMSG lpMsg", "HWND hWnd", "UINT wMsgFilterMin", "UINT wMsgFilterMax"],
+          "return_type": "BOOL"
+        },
+        "PeekMessageA": {
+          "signature": "BOOL PeekMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg)",
+          "parameters": ["LPMSG lpMsg", "HWND hWnd", "UINT wMsgFilterMin", "UINT wMsgFilterMax", "UINT wRemoveMsg"],
+          "return_type": "BOOL"
+        },
+        "RegisterClassExA": {
+          "signature": "ATOM RegisterClassExA(const WNDCLASSEXA *lpwcx)",
+          "parameters": ["const WNDCLASSEXA *lpwcx"],
+          "return_type": "ATOM"
+        }
+      }
+    },
+    "d3d9": {
+      "header": "d3d9.h",
+      "library": "d3d9",
+      "calling_convention": "stdcall",
+      "functions": {
+        "Direct3DCreate9": {
+          "signature": "IDirect3D9* Direct3DCreate9(UINT SDKVersion)",
+          "parameters": ["UINT SDKVersion"],
+          "return_type": "IDirect3D9*"
+        },
+        "D3DXCreateEffect": {
+          "signature": "HRESULT D3DXCreateEffect(LPDIRECT3DDEVICE9 pDevice, LPCVOID pSrcData, UINT SrcDataLen, const D3DXMACRO *pDefines, LPD3DXINCLUDE pInclude, DWORD Flags, LPD3DXEFFECTPOOL pPool, LPD3DXEFFECT *ppEffect, LPD3DXBUFFER *ppCompilationErrors)",
+          "parameters": ["LPDIRECT3DDEVICE9 pDevice", "LPCVOID pSrcData", "UINT SrcDataLen", "const D3DXMACRO *pDefines", "LPD3DXINCLUDE pInclude", "DWORD Flags", "LPD3DXEFFECTPOOL pPool", "LPD3DXEFFECT *ppEffect", "LPD3DXBUFFER *ppCompilationErrors"],
+          "return_type": "HRESULT"
+        },
+        "D3DXCreateTexture": {
+          "signature": "HRESULT D3DXCreateTexture(LPDIRECT3DDEVICE9 pDevice, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, LPDIRECT3DTEXTURE9 *ppTexture)",
+          "parameters": ["LPDIRECT3DDEVICE9 pDevice", "UINT Width", "UINT Height", "UINT MipLevels", "DWORD Usage", "D3DFORMAT Format", "D3DPOOL Pool", "LPDIRECT3DTEXTURE9 *ppTexture"],
+          "return_type": "HRESULT"
+        },
+        "D3DXCreateTextureFromFile": {
+          "signature": "HRESULT D3DXCreateTextureFromFile(LPDIRECT3DDEVICE9 pDevice, LPCSTR pSrcFile, LPDIRECT3DTEXTURE9 *ppTexture)",
+          "parameters": ["LPDIRECT3DDEVICE9 pDevice", "LPCSTR pSrcFile", "LPDIRECT3DTEXTURE9 *ppTexture"],
+          "return_type": "HRESULT"
+        },
+        "D3DXLoadMeshFromX": {
+          "signature": "HRESULT D3DXLoadMeshFromX(LPCSTR pFilename, DWORD Options, LPDIRECT3DDEVICE9 pD3DDevice, LPD3DXBUFFER *ppAdjacency, LPD3DXBUFFER *ppMaterials, LPD3DXBUFFER *ppEffectInstances, DWORD *pNumMaterials, LPD3DXMESH *ppMesh)",
+          "parameters": ["LPCSTR pFilename", "DWORD Options", "LPDIRECT3DDEVICE9 pD3DDevice", "LPD3DXBUFFER *ppAdjacency", "LPD3DXBUFFER *ppMaterials", "LPD3DXBUFFER *ppEffectInstances", "DWORD *pNumMaterials", "LPD3DXMESH *ppMesh"],
+          "return_type": "HRESULT"
+        },
+        "D3DXMatrixIdentity": {
+          "signature": "D3DXMATRIX* D3DXMatrixIdentity(D3DXMATRIX *pOut)",
+          "parameters": ["D3DXMATRIX *pOut"],
+          "return_type": "D3DXMATRIX*"
+        },
+        "D3DXMatrixMultiply": {
+          "signature": "D3DXMATRIX* D3DXMatrixMultiply(D3DXMATRIX *pOut, const D3DXMATRIX *pM1, const D3DXMATRIX *pM2)",
+          "parameters": ["D3DXMATRIX *pOut", "const D3DXMATRIX *pM1", "const D3DXMATRIX *pM2"],
+          "return_type": "D3DXMATRIX*"
+        },
+        "D3DXMatrixTranslation": {
+          "signature": "D3DXMATRIX* D3DXMatrixTranslation(D3DXMATRIX *pOut, FLOAT x, FLOAT y, FLOAT z)",
+          "parameters": ["D3DXMATRIX *pOut", "FLOAT x", "FLOAT y", "FLOAT z"],
+          "return_type": "D3DXMATRIX*"
+        },
+        "D3DXMatrixRotationY": {
+          "signature": "D3DXMATRIX* D3DXMatrixRotationY(D3DXMATRIX *pOut, FLOAT Angle)",
+          "parameters": ["D3DXMATRIX *pOut", "FLOAT Angle"],
+          "return_type": "D3DXMATRIX*"
+        },
+        "D3DXVec3Transform": {
+          "signature": "D3DXVECTOR4* D3DXVec3Transform(D3DXVECTOR4 *pOut, const D3DXVECTOR3 *pV, const D3DXMATRIX *pM)",
+          "parameters": ["D3DXVECTOR4 *pOut", "const D3DXVECTOR3 *pV", "const D3DXMATRIX *pM"],
+          "return_type": "D3DXVECTOR4*"
+        }
+      }
+    },
+    "opengl32": {
+      "header": "GL/gl.h",
+      "library": "opengl32",
+      "calling_convention": "stdcall",
+      "functions": {
+        "glBegin": {
+          "signature": "void glBegin(GLenum mode)",
+          "parameters": ["GLenum mode"],
+          "return_type": "void"
+        },
+        "glEnd": {
+          "signature": "void glEnd(void)",
+          "parameters": [],
+          "return_type": "void"
+        },
+        "glVertex3f": {
+          "signature": "void glVertex3f(GLfloat x, GLfloat y, GLfloat z)",
+          "parameters": ["GLfloat x", "GLfloat y", "GLfloat z"],
+          "return_type": "void"
+        },
+        "glColor3f": {
+          "signature": "void glColor3f(GLfloat red, GLfloat green, GLfloat blue)",
+          "parameters": ["GLfloat red", "GLfloat green", "GLfloat blue"],
+          "return_type": "void"
+        },
+        "glEnable": {
+          "signature": "void glEnable(GLenum cap)",
+          "parameters": ["GLenum cap"],
+          "return_type": "void"
+        },
+        "glDisable": {
+          "signature": "void glDisable(GLenum cap)",
+          "parameters": ["GLenum cap"],
+          "return_type": "void"
+        },
+        "glBindTexture": {
+          "signature": "void glBindTexture(GLenum target, GLuint texture)",
+          "parameters": ["GLenum target", "GLuint texture"],
+          "return_type": "void"
+        },
+        "glGenTextures": {
+          "signature": "void glGenTextures(GLsizei n, GLuint *textures)",
+          "parameters": ["GLsizei n", "GLuint *textures"],
+          "return_type": "void"
+        },
+        "glDeleteTextures": {
+          "signature": "void glDeleteTextures(GLsizei n, const GLuint *textures)",
+          "parameters": ["GLsizei n", "const GLuint *textures"],
+          "return_type": "void"
+        },
+        "glTexImage2D": {
+          "signature": "void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels)",
+          "parameters": ["GLenum target", "GLint level", "GLint internalformat", "GLsizei width", "GLsizei height", "GLint border", "GLenum format", "GLenum type", "const void *pixels"],
+          "return_type": "void"
+        },
+        "glClear": {
+          "signature": "void glClear(GLbitfield mask)",
+          "parameters": ["GLbitfield mask"],
+          "return_type": "void"
+        },
+        "glClearColor": {
+          "signature": "void glClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)",
+          "parameters": ["GLfloat red", "GLfloat green", "GLfloat blue", "GLfloat alpha"],
+          "return_type": "void"
+        },
+        "glViewport": {
+          "signature": "void glViewport(GLint x, GLint y, GLsizei width, GLsizei height)",
+          "parameters": ["GLint x", "GLint y", "GLsizei width", "GLsizei height"],
+          "return_type": "void"
+        },
+        "glMatrixMode": {
+          "signature": "void glMatrixMode(GLenum mode)",
+          "parameters": ["GLenum mode"],
+          "return_type": "void"
+        },
+        "glLoadIdentity": {
+          "signature": "void glLoadIdentity(void)",
+          "parameters": [],
+          "return_type": "void"
+        },
+        "glPushMatrix": {
+          "signature": "void glPushMatrix(void)",
+          "parameters": [],
+          "return_type": "void"
+        },
+        "glPopMatrix": {
+          "signature": "void glPopMatrix(void)",
+          "parameters": [],
+          "return_type": "void"
+        },
+        "glTranslatef": {
+          "signature": "void glTranslatef(GLfloat x, GLfloat y, GLfloat z)",
+          "parameters": ["GLfloat x", "GLfloat y", "GLfloat z"],
+          "return_type": "void"
+        },
+        "glRotatef": {
+          "signature": "void glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z)",
+          "parameters": ["GLfloat angle", "GLfloat x", "GLfloat y", "GLfloat z"],
+          "return_type": "void"
+        },
+        "glScalef": {
+          "signature": "void glScalef(GLfloat x, GLfloat y, GLfloat z)",
+          "parameters": ["GLfloat x", "GLfloat y", "GLfloat z"],
+          "return_type": "void"
+        },
+        "wglCreateContext": {
+          "signature": "HGLRC wglCreateContext(HDC hdc)",
+          "parameters": ["HDC hdc"],
+          "return_type": "HGLRC"
+        },
+        "wglMakeCurrent": {
+          "signature": "BOOL wglMakeCurrent(HDC hdc, HGLRC hglrc)",
+          "parameters": ["HDC hdc", "HGLRC hglrc"],
+          "return_type": "BOOL"
+        },
+        "wglDeleteContext": {
+          "signature": "BOOL wglDeleteContext(HGLRC hglrc)",
+          "parameters": ["HGLRC hglrc"],
+          "return_type": "BOOL"
+        },
+        "glAlphaFunc": {
+          "signature": "void glAlphaFunc(GLenum func, GLfloat ref)",
+          "parameters": ["GLenum func", "GLfloat ref"],
+          "return_type": "void"
+        },
+        "glBlendFunc": {
+          "signature": "void glBlendFunc(GLenum sfactor, GLenum dfactor)",
+          "parameters": ["GLenum sfactor", "GLenum dfactor"],
+          "return_type": "void"
+        },
+        "glClipPlane": {
+          "signature": "void glClipPlane(GLenum plane, const GLdouble *equation)",
+          "parameters": ["GLenum plane", "const GLdouble *equation"],
+          "return_type": "void"
+        },
+        "glColor4fv": {
+          "signature": "void glColor4fv(const GLfloat *v)",
+          "parameters": ["const GLfloat *v"],
+          "return_type": "void"
+        },
+        "glColorMask": {
+          "signature": "void glColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha)",
+          "parameters": ["GLboolean red", "GLboolean green", "GLboolean blue", "GLboolean alpha"],
+          "return_type": "void"
+        },
+        "glColorMaterial": {
+          "signature": "void glColorMaterial(GLenum face, GLenum mode)",
+          "parameters": ["GLenum face", "GLenum mode"],
+          "return_type": "void"
+        },
+        "glColorPointer": {
+          "signature": "void glColorPointer(GLint size, GLenum type, GLsizei stride, const void *pointer)",
+          "parameters": ["GLint size", "GLenum type", "GLsizei stride", "const void *pointer"],
+          "return_type": "void"
+        },
+        "glCopyTexImage2D": {
+          "signature": "void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)",
+          "parameters": ["GLenum target", "GLint level", "GLenum internalformat", "GLint x", "GLint y", "GLsizei width", "GLsizei height", "GLint border"],
+          "return_type": "void"
+        },
+        "glCopyTexSubImage2D": {
+          "signature": "void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)",
+          "parameters": ["GLenum target", "GLint level", "GLint xoffset", "GLint yoffset", "GLint x", "GLint y", "GLsizei width", "GLsizei height"],
+          "return_type": "void"
+        },
+        "glCullFace": {
+          "signature": "void glCullFace(GLenum mode)",
+          "parameters": ["GLenum mode"],
+          "return_type": "void"
+        },
+        "glDepthFunc": {
+          "signature": "void glDepthFunc(GLenum func)",
+          "parameters": ["GLenum func"],
+          "return_type": "void"
+        },
+        "glDepthMask": {
+          "signature": "void glDepthMask(GLboolean flag)",
+          "parameters": ["GLboolean flag"],
+          "return_type": "void"
+        },
+        "glDepthRange": {
+          "signature": "void glDepthRange(GLdouble nearVal, GLdouble farVal)",
+          "parameters": ["GLdouble nearVal", "GLdouble farVal"],
+          "return_type": "void"
+        },
+        "glDisableClientState": {
+          "signature": "void glDisableClientState(GLenum array)",
+          "parameters": ["GLenum array"],
+          "return_type": "void"
+        },
+        "glDrawArrays": {
+          "signature": "void glDrawArrays(GLenum mode, GLint first, GLsizei count)",
+          "parameters": ["GLenum mode", "GLint first", "GLsizei count"],
+          "return_type": "void"
+        },
+        "glDrawElements": {
+          "signature": "void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)",
+          "parameters": ["GLenum mode", "GLsizei count", "GLenum type", "const void *indices"],
+          "return_type": "void"
+        },
+        "glEnableClientState": {
+          "signature": "void glEnableClientState(GLenum array)",
+          "parameters": ["GLenum array"],
+          "return_type": "void"
+        },
+        "glFinish": {
+          "signature": "void glFinish(void)",
+          "parameters": [],
+          "return_type": "void"
+        },
+        "glFogf": {
+          "signature": "void glFogf(GLenum pname, GLfloat param)",
+          "parameters": ["GLenum pname", "GLfloat param"],
+          "return_type": "void"
+        },
+        "glFogfv": {
+          "signature": "void glFogfv(GLenum pname, const GLfloat *params)",
+          "parameters": ["GLenum pname", "const GLfloat *params"],
+          "return_type": "void"
+        },
+        "glFogi": {
+          "signature": "void glFogi(GLenum pname, GLint param)",
+          "parameters": ["GLenum pname", "GLint param"],
+          "return_type": "void"
+        },
+        "glGetError": {
+          "signature": "GLenum glGetError(void)",
+          "parameters": [],
+          "return_type": "GLenum"
+        },
+        "glGetFloatv": {
+          "signature": "void glGetFloatv(GLenum pname, GLfloat *params)",
+          "parameters": ["GLenum pname", "GLfloat *params"],
+          "return_type": "void"
+        },
+        "glGetIntegerv": {
+          "signature": "void glGetIntegerv(GLenum pname, GLint *params)",
+          "parameters": ["GLenum pname", "GLint *params"],
+          "return_type": "void"
+        },
+        "glGetString": {
+          "signature": "const GLubyte* glGetString(GLenum name)",
+          "parameters": ["GLenum name"],
+          "return_type": "const GLubyte*"
+        },
+        "glHint": {
+          "signature": "void glHint(GLenum target, GLenum mode)",
+          "parameters": ["GLenum target", "GLenum mode"],
+          "return_type": "void"
+        },
+        "glLightModelfv": {
+          "signature": "void glLightModelfv(GLenum pname, const GLfloat *params)",
+          "parameters": ["GLenum pname", "const GLfloat *params"],
+          "return_type": "void"
+        },
+        "glLightModeli": {
+          "signature": "void glLightModeli(GLenum pname, GLint param)",
+          "parameters": ["GLenum pname", "GLint param"],
+          "return_type": "void"
+        },
+        "glLightf": {
+          "signature": "void glLightf(GLenum light, GLenum pname, GLfloat param)",
+          "parameters": ["GLenum light", "GLenum pname", "GLfloat param"],
+          "return_type": "void"
+        },
+        "glLightfv": {
+          "signature": "void glLightfv(GLenum light, GLenum pname, const GLfloat *params)",
+          "parameters": ["GLenum light", "GLenum pname", "const GLfloat *params"],
+          "return_type": "void"
+        },
+        "glLineWidth": {
+          "signature": "void glLineWidth(GLfloat width)",
+          "parameters": ["GLfloat width"],
+          "return_type": "void"
+        },
+        "glLoadMatrixf": {
+          "signature": "void glLoadMatrixf(const GLfloat *m)",
+          "parameters": ["const GLfloat *m"],
+          "return_type": "void"
+        },
+        "glMaterialf": {
+          "signature": "void glMaterialf(GLenum face, GLenum pname, GLfloat param)",
+          "parameters": ["GLenum face", "GLenum pname", "GLfloat param"],
+          "return_type": "void"
+        },
+        "glMaterialfv": {
+          "signature": "void glMaterialfv(GLenum face, GLenum pname, const GLfloat *params)",
+          "parameters": ["GLenum face", "GLenum pname", "const GLfloat *params"],
+          "return_type": "void"
+        },
+        "glNormalPointer": {
+          "signature": "void glNormalPointer(GLenum type, GLsizei stride, const void *pointer)",
+          "parameters": ["GLenum type", "GLsizei stride", "const void *pointer"],
+          "return_type": "void"
+        },
+        "glPixelStorei": {
+          "signature": "void glPixelStorei(GLenum pname, GLint param)",
+          "parameters": ["GLenum pname", "GLint param"],
+          "return_type": "void"
+        },
+        "glPointSize": {
+          "signature": "void glPointSize(GLfloat size)",
+          "parameters": ["GLfloat size"],
+          "return_type": "void"
+        },
+        "glPolygonMode": {
+          "signature": "void glPolygonMode(GLenum face, GLenum mode)",
+          "parameters": ["GLenum face", "GLenum mode"],
+          "return_type": "void"
+        },
+        "glPolygonOffset": {
+          "signature": "void glPolygonOffset(GLfloat factor, GLfloat units)",
+          "parameters": ["GLfloat factor", "GLfloat units"],
+          "return_type": "void"
+        },
+        "glReadPixels": {
+          "signature": "void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels)",
+          "parameters": ["GLint x", "GLint y", "GLsizei width", "GLsizei height", "GLenum format", "GLenum type", "void *pixels"],
+          "return_type": "void"
+        },
+        "glScissor": {
+          "signature": "void glScissor(GLint x, GLint y, GLsizei width, GLsizei height)",
+          "parameters": ["GLint x", "GLint y", "GLsizei width", "GLsizei height"],
+          "return_type": "void"
+        },
+        "glTexCoordPointer": {
+          "signature": "void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const void *pointer)",
+          "parameters": ["GLint size", "GLenum type", "GLsizei stride", "const void *pointer"],
+          "return_type": "void"
+        },
+        "glTexEnvf": {
+          "signature": "void glTexEnvf(GLenum target, GLenum pname, GLfloat param)",
+          "parameters": ["GLenum target", "GLenum pname", "GLfloat param"],
+          "return_type": "void"
+        },
+        "glTexEnvfv": {
+          "signature": "void glTexEnvfv(GLenum target, GLenum pname, const GLfloat *params)",
+          "parameters": ["GLenum target", "GLenum pname", "const GLfloat *params"],
+          "return_type": "void"
+        },
+        "glTexEnvi": {
+          "signature": "void glTexEnvi(GLenum target, GLenum pname, GLint param)",
+          "parameters": ["GLenum target", "GLenum pname", "GLint param"],
+          "return_type": "void"
+        },
+        "glTexEnviv": {
+          "signature": "void glTexEnviv(GLenum target, GLenum pname, const GLint *params)",
+          "parameters": ["GLenum target", "GLenum pname", "const GLint *params"],
+          "return_type": "void"
+        },
+        "glTexGenfv": {
+          "signature": "void glTexGenfv(GLenum coord, GLenum pname, const GLfloat *params)",
+          "parameters": ["GLenum coord", "GLenum pname", "const GLfloat *params"],
+          "return_type": "void"
+        },
+        "glTexGeni": {
+          "signature": "void glTexGeni(GLenum coord, GLenum pname, GLint param)",
+          "parameters": ["GLenum coord", "GLenum pname", "GLint param"],
+          "return_type": "void"
+        },
+        "glTexParameteri": {
+          "signature": "void glTexParameteri(GLenum target, GLenum pname, GLint param)",
+          "parameters": ["GLenum target", "GLenum pname", "GLint param"],
+          "return_type": "void"
+        },
+        "glTexSubImage2D": {
+          "signature": "void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels)",
+          "parameters": ["GLenum target", "GLint level", "GLint xoffset", "GLint yoffset", "GLsizei width", "GLsizei height", "GLenum format", "GLenum type", "const void *pixels"],
+          "return_type": "void"
+        },
+        "glVertexPointer": {
+          "signature": "void glVertexPointer(GLint size, GLenum type, GLsizei stride, const void *pointer)",
+          "parameters": ["GLint size", "GLenum type", "GLsizei stride", "const void *pointer"],
+          "return_type": "void"
+        },
+        "wglGetCurrentContext": {
+          "signature": "HGLRC wglGetCurrentContext(void)",
+          "parameters": [],
+          "return_type": "HGLRC"
+        },
+        "wglGetCurrentDC": {
+          "signature": "HDC wglGetCurrentDC(void)",
+          "parameters": [],
+          "return_type": "HDC"
+        },
+        "wglGetProcAddress": {
+          "signature": "PROC wglGetProcAddress(LPCSTR lpszProc)",
+          "parameters": ["LPCSTR lpszProc"],
+          "return_type": "PROC"
+        },
+        "wglSwapLayerBuffers": {
+          "signature": "BOOL wglSwapLayerBuffers(HDC hdc, UINT fuPlanes)",
+          "parameters": ["HDC hdc", "UINT fuPlanes"],
+          "return_type": "BOOL"
+        }
+      }
+    },
+    "ws2_32": {
+      "header": "winsock2.h",
+      "library": "ws2_32",
+      "calling_convention": "stdcall",
+      "functions": {
+        "WSAStartup": {
+          "signature": "int WSAStartup(WORD wVersionRequired, LPWSADATA lpWSAData)",
+          "parameters": ["WORD wVersionRequired", "LPWSADATA lpWSAData"],
+          "return_type": "int"
+        },
+        "WSACleanup": {
+          "signature": "int WSACleanup(void)",
+          "parameters": [],
+          "return_type": "int"
+        },
+        "WSAGetLastError": {
+          "signature": "int WSAGetLastError(void)",
+          "parameters": [],
+          "return_type": "int"
+        },
+        "socket": {
+          "signature": "SOCKET socket(int af, int type, int protocol)",
+          "parameters": ["int af", "int type", "int protocol"],
+          "return_type": "SOCKET"
+        },
+        "bind": {
+          "signature": "int bind(SOCKET s, const struct sockaddr *addr, int namelen)",
+          "parameters": ["SOCKET s", "const struct sockaddr *addr", "int namelen"],
+          "return_type": "int"
+        },
+        "listen": {
+          "signature": "int listen(SOCKET s, int backlog)",
+          "parameters": ["SOCKET s", "int backlog"],
+          "return_type": "int"
+        },
+        "accept": {
+          "signature": "SOCKET accept(SOCKET s, struct sockaddr *addr, int *addrlen)",
+          "parameters": ["SOCKET s", "struct sockaddr *addr", "int *addrlen"],
+          "return_type": "SOCKET"
+        },
+        "connect": {
+          "signature": "int connect(SOCKET s, const struct sockaddr *name, int namelen)",
+          "parameters": ["SOCKET s", "const struct sockaddr *name", "int namelen"],
+          "return_type": "int"
+        },
+        "send": {
+          "signature": "int send(SOCKET s, const char *buf, int len, int flags)",
+          "parameters": ["SOCKET s", "const char *buf", "int len", "int flags"],
+          "return_type": "int"
+        },
+        "recv": {
+          "signature": "int recv(SOCKET s, char *buf, int len, int flags)",
+          "parameters": ["SOCKET s", "char *buf", "int len", "int flags"],
+          "return_type": "int"
+        },
+        "sendto": {
+          "signature": "int sendto(SOCKET s, const char *buf, int len, int flags, const struct sockaddr *to, int tolen)",
+          "parameters": ["SOCKET s", "const char *buf", "int len", "int flags", "const struct sockaddr *to", "int tolen"],
+          "return_type": "int"
+        },
+        "recvfrom": {
+          "signature": "int recvfrom(SOCKET s, char *buf, int len, int flags, struct sockaddr *from, int *fromlen)",
+          "parameters": ["SOCKET s", "char *buf", "int len", "int flags", "struct sockaddr *from", "int *fromlen"],
+          "return_type": "int"
+        },
+        "closesocket": {
+          "signature": "int closesocket(SOCKET s)",
+          "parameters": ["SOCKET s"],
+          "return_type": "int"
+        },
+        "shutdown": {
+          "signature": "int shutdown(SOCKET s, int how)",
+          "parameters": ["SOCKET s", "int how"],
+          "return_type": "int"
+        },
+        "gethostbyname": {
+          "signature": "struct hostent* gethostbyname(const char *name)",
+          "parameters": ["const char *name"],
+          "return_type": "struct hostent*"
+        },
+        "inet_addr": {
+          "signature": "unsigned long inet_addr(const char *cp)",
+          "parameters": ["const char *cp"],
+          "return_type": "unsigned long"
+        },
+        "inet_ntoa": {
+          "signature": "char* inet_ntoa(struct in_addr in)",
+          "parameters": ["struct in_addr in"],
+          "return_type": "char*"
+        },
+        "htons": {
+          "signature": "u_short htons(u_short hostshort)",
+          "parameters": ["u_short hostshort"],
+          "return_type": "u_short"
+        },
+        "htonl": {
+          "signature": "u_long htonl(u_long hostlong)",
+          "parameters": ["u_long hostlong"],
+          "return_type": "u_long"
+        },
+        "ntohs": {
+          "signature": "u_short ntohs(u_short netshort)",
+          "parameters": ["u_short netshort"],
+          "return_type": "u_short"
+        },
+        "ntohl": {
+          "signature": "u_long ntohl(u_long netlong)",
+          "parameters": ["u_long netlong"],
+          "return_type": "u_long"
+        },
+        "select": {
+          "signature": "int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, const struct timeval *timeout)",
+          "parameters": ["int nfds", "fd_set *readfds", "fd_set *writefds", "fd_set *exceptfds", "const struct timeval *timeout"],
+          "return_type": "int"
+        }
+      }
+    },
+    "wininet": {
+      "header": "wininet.h",
+      "library": "wininet",
+      "calling_convention": "stdcall",
+      "functions": {
+        "InternetOpen": {
+          "signature": "HINTERNET InternetOpen(LPCSTR lpszAgent, DWORD dwAccessType, LPCSTR lpszProxy, LPCSTR lpszProxyBypass, DWORD dwFlags)",
+          "parameters": ["LPCSTR lpszAgent", "DWORD dwAccessType", "LPCSTR lpszProxy", "LPCSTR lpszProxyBypass", "DWORD dwFlags"],
+          "return_type": "HINTERNET"
+        },
+        "InternetOpenUrl": {
+          "signature": "HINTERNET InternetOpenUrl(HINTERNET hInternet, LPCSTR lpszUrl, LPCSTR lpszHeaders, DWORD dwHeadersLength, DWORD dwFlags, DWORD_PTR dwContext)",
+          "parameters": ["HINTERNET hInternet", "LPCSTR lpszUrl", "LPCSTR lpszHeaders", "DWORD dwHeadersLength", "DWORD dwFlags", "DWORD_PTR dwContext"],
+          "return_type": "HINTERNET"
+        },
+        "InternetReadFile": {
+          "signature": "BOOL InternetReadFile(HINTERNET hFile, LPVOID lpBuffer, DWORD dwNumberOfBytesToRead, LPDWORD lpdwNumberOfBytesRead)",
+          "parameters": ["HINTERNET hFile", "LPVOID lpBuffer", "DWORD dwNumberOfBytesToRead", "LPDWORD lpdwNumberOfBytesRead"],
+          "return_type": "BOOL"
+        },
+        "InternetCloseHandle": {
+          "signature": "BOOL InternetCloseHandle(HINTERNET hInternet)",
+          "parameters": ["HINTERNET hInternet"],
+          "return_type": "BOOL"
+        },
+        "HttpOpenRequest": {
+          "signature": "HINTERNET HttpOpenRequest(HINTERNET hConnect, LPCSTR lpszVerb, LPCSTR lpszObjectName, LPCSTR lpszVersion, LPCSTR lpszReferrer, LPCSTR *lplpszAcceptTypes, DWORD dwFlags, DWORD_PTR dwContext)",
+          "parameters": ["HINTERNET hConnect", "LPCSTR lpszVerb", "LPCSTR lpszObjectName", "LPCSTR lpszVersion", "LPCSTR lpszReferrer", "LPCSTR *lplpszAcceptTypes", "DWORD dwFlags", "DWORD_PTR dwContext"],
+          "return_type": "HINTERNET"
+        },
+        "HttpSendRequest": {
+          "signature": "BOOL HttpSendRequest(HINTERNET hRequest, LPCSTR lpszHeaders, DWORD dwHeadersLength, LPVOID lpOptional, DWORD dwOptionalLength)",
+          "parameters": ["HINTERNET hRequest", "LPCSTR lpszHeaders", "DWORD dwHeadersLength", "LPVOID lpOptional", "DWORD dwOptionalLength"],
+          "return_type": "BOOL"
+        },
+        "InternetConnect": {
+          "signature": "HINTERNET InternetConnect(HINTERNET hInternet, LPCSTR lpszServerName, INTERNET_PORT nServerPort, LPCSTR lpszUserName, LPCSTR lpszPassword, DWORD dwService, DWORD dwFlags, DWORD_PTR dwContext)",
+          "parameters": ["HINTERNET hInternet", "LPCSTR lpszServerName", "INTERNET_PORT nServerPort", "LPCSTR lpszUserName", "LPCSTR lpszPassword", "DWORD dwService", "DWORD dwFlags", "DWORD_PTR dwContext"],
+          "return_type": "HINTERNET"
+        },
+        "HttpOpenRequestA": {
+          "signature": "HINTERNET HttpOpenRequestA(HINTERNET hConnect, LPCSTR lpszVerb, LPCSTR lpszObjectName, LPCSTR lpszVersion, LPCSTR lpszReferrer, LPCSTR *lplpszAcceptTypes, DWORD dwFlags, DWORD_PTR dwContext)",
+          "parameters": ["HINTERNET hConnect", "LPCSTR lpszVerb", "LPCSTR lpszObjectName", "LPCSTR lpszVersion", "LPCSTR lpszReferrer", "LPCSTR *lplpszAcceptTypes", "DWORD dwFlags", "DWORD_PTR dwContext"],
+          "return_type": "HINTERNET"
+        },
+        "HttpQueryInfoA": {
+          "signature": "BOOL HttpQueryInfoA(HINTERNET hRequest, DWORD dwInfoLevel, LPVOID lpBuffer, LPDWORD lpdwBufferLength, LPDWORD lpdwIndex)",
+          "parameters": ["HINTERNET hRequest", "DWORD dwInfoLevel", "LPVOID lpBuffer", "LPDWORD lpdwBufferLength", "LPDWORD lpdwIndex"],
+          "return_type": "BOOL"
+        },
+        "HttpSendRequestA": {
+          "signature": "BOOL HttpSendRequestA(HINTERNET hRequest, LPCSTR lpszHeaders, DWORD dwHeadersLength, LPVOID lpOptional, DWORD dwOptionalLength)",
+          "parameters": ["HINTERNET hRequest", "LPCSTR lpszHeaders", "DWORD dwHeadersLength", "LPVOID lpOptional", "DWORD dwOptionalLength"],
+          "return_type": "BOOL"
+        },
+        "InternetConnectA": {
+          "signature": "HINTERNET InternetConnectA(HINTERNET hInternet, LPCSTR lpszServerName, INTERNET_PORT nServerPort, LPCSTR lpszUserName, LPCSTR lpszPassword, DWORD dwService, DWORD dwFlags, DWORD_PTR dwContext)",
+          "parameters": ["HINTERNET hInternet", "LPCSTR lpszServerName", "INTERNET_PORT nServerPort", "LPCSTR lpszUserName", "LPCSTR lpszPassword", "DWORD dwService", "DWORD dwFlags", "DWORD_PTR dwContext"],
+          "return_type": "HINTERNET"
+        },
+        "InternetCrackUrlA": {
+          "signature": "BOOL InternetCrackUrlA(LPCSTR lpszUrl, DWORD dwUrlLength, DWORD dwFlags, LPURL_COMPONENTSA lpUrlComponents)",
+          "parameters": ["LPCSTR lpszUrl", "DWORD dwUrlLength", "DWORD dwFlags", "LPURL_COMPONENTSA lpUrlComponents"],
+          "return_type": "BOOL"
+        },
+        "InternetOpenA": {
+          "signature": "HINTERNET InternetOpenA(LPCSTR lpszAgent, DWORD dwAccessType, LPCSTR lpszProxy, LPCSTR lpszProxyBypass, DWORD dwFlags)",
+          "parameters": ["LPCSTR lpszAgent", "DWORD dwAccessType", "LPCSTR lpszProxy", "LPCSTR lpszProxyBypass", "DWORD dwFlags"],
+          "return_type": "HINTERNET"
+        },
+        "InternetReadFileExA": {
+          "signature": "BOOL InternetReadFileExA(HINTERNET hFile, LPINTERNET_BUFFERSA lpBuffersOut, DWORD dwFlags, DWORD_PTR dwContext)",
+          "parameters": ["HINTERNET hFile", "LPINTERNET_BUFFERSA lpBuffersOut", "DWORD dwFlags", "DWORD_PTR dwContext"],
+          "return_type": "BOOL"
+        },
+        "InternetSetOptionA": {
+          "signature": "BOOL InternetSetOptionA(HINTERNET hInternet, DWORD dwOption, LPVOID lpBuffer, DWORD dwBufferLength)",
+          "parameters": ["HINTERNET hInternet", "DWORD dwOption", "LPVOID lpBuffer", "DWORD dwBufferLength"],
+          "return_type": "BOOL"
+        },
+        "InternetSetStatusCallback": {
+          "signature": "INTERNET_STATUS_CALLBACK InternetSetStatusCallback(HINTERNET hInternet, INTERNET_STATUS_CALLBACK lpfnInternetCallback)",
+          "parameters": ["HINTERNET hInternet", "INTERNET_STATUS_CALLBACK lpfnInternetCallback"],
+          "return_type": "INTERNET_STATUS_CALLBACK"
+        }
+      }
+    },
+    "dsound": {
+      "header": "dsound.h",
+      "library": "dsound",
+      "calling_convention": "stdcall",
+      "functions": {
+        "DirectSoundCreate": {
+          "signature": "HRESULT DirectSoundCreate(LPCGUID pcGuidDevice, LPDIRECTSOUND *ppDS, LPUNKNOWN pUnkOuter)",
+          "parameters": ["LPCGUID pcGuidDevice", "LPDIRECTSOUND *ppDS", "LPUNKNOWN pUnkOuter"],
+          "return_type": "HRESULT"
+        },
+        "DirectSoundEnumerate": {
+          "signature": "HRESULT DirectSoundEnumerate(LPDSENUMCALLBACK pDSEnumCallback, LPVOID pContext)",
+          "parameters": ["LPDSENUMCALLBACK pDSEnumCallback", "LPVOID pContext"],
+          "return_type": "HRESULT"
+        }
+      }
+    },
+    "dinput": {
+      "header": "dinput.h",
+      "library": "dinput",
+      "calling_convention": "stdcall",
+      "functions": {
+        "DirectInputCreate": {
+          "signature": "HRESULT DirectInputCreate(HINSTANCE hinst, DWORD dwVersion, LPDIRECTINPUT *ppDI, LPUNKNOWN punkOuter)",
+          "parameters": ["HINSTANCE hinst", "DWORD dwVersion", "LPDIRECTINPUT *ppDI", "LPUNKNOWN punkOuter"],
+          "return_type": "HRESULT"
+        }
+      }
+    },
+    "msvcrt": {
+      "header": "stdio.h",
+      "library": "msvcrt",
+      "calling_convention": "cdecl",
+      "functions": {
+        "malloc": {
+          "signature": "void* malloc(size_t size)",
+          "parameters": ["size_t size"],
+          "return_type": "void*"
+        },
+        "free": {
+          "signature": "void free(void *ptr)",
+          "parameters": ["void *ptr"],
+          "return_type": "void"
+        },
+        "realloc": {
+          "signature": "void* realloc(void *ptr, size_t size)",
+          "parameters": ["void *ptr", "size_t size"],
+          "return_type": "void*"
+        },
+        "calloc": {
+          "signature": "void* calloc(size_t num, size_t size)",
+          "parameters": ["size_t num", "size_t size"],
+          "return_type": "void*"
+        },
+        "printf": {
+          "signature": "int printf(const char *format, ...)",
+          "parameters": ["const char *format", "..."],
+          "return_type": "int"
+        },
+        "sprintf": {
+          "signature": "int sprintf(char *str, const char *format, ...)",
+          "parameters": ["char *str", "const char *format", "..."],
+          "return_type": "int"
+        },
+        "scanf": {
+          "signature": "int scanf(const char *format, ...)",
+          "parameters": ["const char *format", "..."],
+          "return_type": "int"
+        },
+        "fopen": {
+          "signature": "FILE* fopen(const char *filename, const char *mode)",
+          "parameters": ["const char *filename", "const char *mode"],
+          "return_type": "FILE*"
+        },
+        "fclose": {
+          "signature": "int fclose(FILE *stream)",
+          "parameters": ["FILE *stream"],
+          "return_type": "int"
+        },
+        "fread": {
+          "signature": "size_t fread(void *ptr, size_t size, size_t count, FILE *stream)",
+          "parameters": ["void *ptr", "size_t size", "size_t count", "FILE *stream"],
+          "return_type": "size_t"
+        },
+        "fwrite": {
+          "signature": "size_t fwrite(const void *ptr, size_t size, size_t count, FILE *stream)",
+          "parameters": ["const void *ptr", "size_t size", "size_t count", "FILE *stream"],
+          "return_type": "size_t"
+        },
+        "fseek": {
+          "signature": "int fseek(FILE *stream, long offset, int whence)",
+          "parameters": ["FILE *stream", "long offset", "int whence"],
+          "return_type": "int"
+        },
+        "ftell": {
+          "signature": "long ftell(FILE *stream)",
+          "parameters": ["FILE *stream"],
+          "return_type": "long"
+        },
+        "strcpy": {
+          "signature": "char* strcpy(char *dest, const char *src)",
+          "parameters": ["char *dest", "const char *src"],
+          "return_type": "char*"
+        },
+        "strcat": {
+          "signature": "char* strcat(char *dest, const char *src)",
+          "parameters": ["char *dest", "const char *src"],
+          "return_type": "char*"
+        },
+        "strlen": {
+          "signature": "size_t strlen(const char *str)",
+          "parameters": ["const char *str"],
+          "return_type": "size_t"
+        },
+        "strcmp": {
+          "signature": "int strcmp(const char *str1, const char *str2)",
+          "parameters": ["const char *str1", "const char *str2"],
+          "return_type": "int"
+        },
+        "memcpy": {
+          "signature": "void* memcpy(void *dest, const void *src, size_t n)",
+          "parameters": ["void *dest", "const void *src", "size_t n"],
+          "return_type": "void*"
+        },
+        "memset": {
+          "signature": "void* memset(void *s, int c, size_t n)",
+          "parameters": ["void *s", "int c", "size_t n"],
+          "return_type": "void*"
+        },
+        "atoi": {
+          "signature": "int atoi(const char *str)",
+          "parameters": ["const char *str"],
+          "return_type": "int"
+        },
+        "atof": {
+          "signature": "double atof(const char *str)",
+          "parameters": ["const char *str"],
+          "return_type": "double"
+        },
+        "fclose_lk": {
+          "signature": "int fclose_lk(FILE *stream)",
+          "parameters": ["FILE *stream"],
+          "return_type": "int"
+        },
+        "freebuf": {
+          "signature": "void freebuf(FILE *stream)",
+          "parameters": ["FILE *stream"],
+          "return_type": "void"
+        },
+        "global_unwind2": {
+          "signature": "void global_unwind2(PEXCEPTION_REGISTRATION_RECORD pEstablisherFrame)",
+          "parameters": ["PEXCEPTION_REGISTRATION_RECORD pEstablisherFrame"],
+          "return_type": "void"
+        }
+      }
+    },
+    "advapi32": {
+      "header": "windows.h",
+      "library": "advapi32",
+      "calling_convention": "stdcall",
+      "functions": {
+        "RegOpenKeyEx": {
+          "signature": "LONG RegOpenKeyEx(HKEY hKey, LPCSTR lpSubKey, DWORD ulOptions, REGSAM samDesired, PHKEY phkResult)",
+          "parameters": ["HKEY hKey", "LPCSTR lpSubKey", "DWORD ulOptions", "REGSAM samDesired", "PHKEY phkResult"],
+          "return_type": "LONG"
+        },
+        "RegCloseKey": {
+          "signature": "LONG RegCloseKey(HKEY hKey)",
+          "parameters": ["HKEY hKey"],
+          "return_type": "LONG"
+        },
+        "RegQueryValueEx": {
+          "signature": "LONG RegQueryValueEx(HKEY hKey, LPCSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData)",
+          "parameters": ["HKEY hKey", "LPCSTR lpValueName", "LPDWORD lpReserved", "LPDWORD lpType", "LPBYTE lpData", "LPDWORD lpcbData"],
+          "return_type": "LONG"
+        },
+        "RegSetValueEx": {
+          "signature": "LONG RegSetValueEx(HKEY hKey, LPCSTR lpValueName, DWORD Reserved, DWORD dwType, const BYTE *lpData, DWORD cbData)",
+          "parameters": ["HKEY hKey", "LPCSTR lpValueName", "DWORD Reserved", "DWORD dwType", "const BYTE *lpData", "DWORD cbData"],
+          "return_type": "LONG"
+        },
+        "RegCreateKeyEx": {
+          "signature": "LONG RegCreateKeyEx(HKEY hKey, LPCSTR lpSubKey, DWORD Reserved, LPSTR lpClass, DWORD dwOptions, REGSAM samDesired, LPSECURITY_ATTRIBUTES lpSecurityAttributes, PHKEY phkResult, LPDWORD lpdwDisposition)",
+          "parameters": ["HKEY hKey", "LPCSTR lpSubKey", "DWORD Reserved", "LPSTR lpClass", "DWORD dwOptions", "REGSAM samDesired", "LPSECURITY_ATTRIBUTES lpSecurityAttributes", "PHKEY phkResult", "LPDWORD lpdwDisposition"],
+          "return_type": "LONG"
+        },
+        "RegDeleteKey": {
+          "signature": "LONG RegDeleteKey(HKEY hKey, LPCSTR lpSubKey)",
+          "parameters": ["HKEY hKey", "LPCSTR lpSubKey"],
+          "return_type": "LONG"
+        },
+        "RegCreateKeyExA": {
+          "signature": "LONG RegCreateKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD Reserved, LPSTR lpClass, DWORD dwOptions, REGSAM samDesired, LPSECURITY_ATTRIBUTES lpSecurityAttributes, PHKEY phkResult, LPDWORD lpdwDisposition)",
+          "parameters": ["HKEY hKey", "LPCSTR lpSubKey", "DWORD Reserved", "LPSTR lpClass", "DWORD dwOptions", "REGSAM samDesired", "LPSECURITY_ATTRIBUTES lpSecurityAttributes", "PHKEY phkResult", "LPDWORD lpdwDisposition"],
+          "return_type": "LONG"
+        },
+        "RegDeleteKeyA": {
+          "signature": "LONG RegDeleteKeyA(HKEY hKey, LPCSTR lpSubKey)",
+          "parameters": ["HKEY hKey", "LPCSTR lpSubKey"],
+          "return_type": "LONG"
+        },
+        "RegDeleteValueA": {
+          "signature": "LONG RegDeleteValueA(HKEY hKey, LPCSTR lpValueName)",
+          "parameters": ["HKEY hKey", "LPCSTR lpValueName"],
+          "return_type": "LONG"
+        },
+        "RegEnumKeyExA": {
+          "signature": "LONG RegEnumKeyExA(HKEY hKey, DWORD dwIndex, LPSTR lpName, LPDWORD lpcchName, LPDWORD lpReserved, LPSTR lpClass, LPDWORD lpcchClass, PFILETIME lpftLastWriteTime)",
+          "parameters": ["HKEY hKey", "DWORD dwIndex", "LPSTR lpName", "LPDWORD lpcchName", "LPDWORD lpReserved", "LPSTR lpClass", "LPDWORD lpcchClass", "PFILETIME lpftLastWriteTime"],
+          "return_type": "LONG"
+        },
+        "RegFlushKey": {
+          "signature": "LONG RegFlushKey(HKEY hKey)",
+          "parameters": ["HKEY hKey"],
+          "return_type": "LONG"
+        },
+        "RegOpenKeyA": {
+          "signature": "LONG RegOpenKeyA(HKEY hKey, LPCSTR lpSubKey, PHKEY phkResult)",
+          "parameters": ["HKEY hKey", "LPCSTR lpSubKey", "PHKEY phkResult"],
+          "return_type": "LONG"
+        },
+        "RegOpenKeyExA": {
+          "signature": "LONG RegOpenKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD ulOptions, REGSAM samDesired, PHKEY phkResult)",
+          "parameters": ["HKEY hKey", "LPCSTR lpSubKey", "DWORD ulOptions", "REGSAM samDesired", "PHKEY phkResult"],
+          "return_type": "LONG"
+        },
+        "RegQueryInfoKeyA": {
+          "signature": "LONG RegQueryInfoKeyA(HKEY hKey, LPSTR lpClass, LPDWORD lpcchClass, LPDWORD lpReserved, LPDWORD lpcSubKeys, LPDWORD lpcbMaxSubKeyLen, LPDWORD lpcbMaxClassLen, LPDWORD lpcValues, LPDWORD lpcbMaxValueNameLen, LPDWORD lpcbMaxValueLen, LPDWORD lpcbSecurityDescriptor, PFILETIME lpftLastWriteTime)",
+          "parameters": ["HKEY hKey", "LPSTR lpClass", "LPDWORD lpcchClass", "LPDWORD lpReserved", "LPDWORD lpcSubKeys", "LPDWORD lpcbMaxSubKeyLen", "LPDWORD lpcbMaxClassLen", "LPDWORD lpcValues", "LPDWORD lpcbMaxValueNameLen", "LPDWORD lpcbMaxValueLen", "LPDWORD lpcbSecurityDescriptor", "PFILETIME lpftLastWriteTime"],
+          "return_type": "LONG"
+        },
+        "RegQueryValueExA": {
+          "signature": "LONG RegQueryValueExA(HKEY hKey, LPCSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData)",
+          "parameters": ["HKEY hKey", "LPCSTR lpValueName", "LPDWORD lpReserved", "LPDWORD lpType", "LPBYTE lpData", "LPDWORD lpcbData"],
+          "return_type": "LONG"
+        },
+        "RegSetValueExA": {
+          "signature": "LONG RegSetValueExA(HKEY hKey, LPCSTR lpValueName, DWORD Reserved, DWORD dwType, const BYTE *lpData, DWORD cbData)",
+          "parameters": ["HKEY hKey", "LPCSTR lpValueName", "DWORD Reserved", "DWORD dwType", "const BYTE *lpData", "DWORD cbData"],
+          "return_type": "LONG"
+        }
+      }
+    },
+    "gdi32": {
+      "header": "windows.h",
+      "library": "gdi32",
+      "calling_convention": "stdcall",
+      "functions": {
+        "CreateCompatibleDC": {
+          "signature": "HDC CreateCompatibleDC(HDC hdc)",
+          "parameters": ["HDC hdc"],
+          "return_type": "HDC"
+        },
+        "CreateCompatibleBitmap": {
+          "signature": "HBITMAP CreateCompatibleBitmap(HDC hdc, int cx, int cy)",
+          "parameters": ["HDC hdc", "int cx", "int cy"],
+          "return_type": "HBITMAP"
+        },
+        "SelectObject": {
+          "signature": "HGDIOBJ SelectObject(HDC hdc, HGDIOBJ h)",
+          "parameters": ["HDC hdc", "HGDIOBJ h"],
+          "return_type": "HGDIOBJ"
+        },
+        "DeleteDC": {
+          "signature": "BOOL DeleteDC(HDC hdc)",
+          "parameters": ["HDC hdc"],
+          "return_type": "BOOL"
+        },
+        "DeleteObject": {
+          "signature": "BOOL DeleteObject(HGDIOBJ ho)",
+          "parameters": ["HGDIOBJ ho"],
+          "return_type": "BOOL"
+        },
+        "BitBlt": {
+          "signature": "BOOL BitBlt(HDC hdc, int x, int y, int cx, int cy, HDC hdcSrc, int x1, int y1, DWORD rop)",
+          "parameters": ["HDC hdc", "int x", "int y", "int cx", "int cy", "HDC hdcSrc", "int x1", "int y1", "DWORD rop"],
+          "return_type": "BOOL"
+        },
+        "TextOut": {
+          "signature": "BOOL TextOut(HDC hdc, int x, int y, LPCSTR lpString, int c)",
+          "parameters": ["HDC hdc", "int x", "int y", "LPCSTR lpString", "int c"],
+          "return_type": "BOOL"
+        },
+        "SetTextColor": {
+          "signature": "COLORREF SetTextColor(HDC hdc, COLORREF color)",
+          "parameters": ["HDC hdc", "COLORREF color"],
+          "return_type": "COLORREF"
+        },
+        "SetBkColor": {
+          "signature": "COLORREF SetBkColor(HDC hdc, COLORREF color)",
+          "parameters": ["HDC hdc", "COLORREF color"],
+          "return_type": "COLORREF"
+        },
+        "GetStockObject": {
+          "signature": "HGDIOBJ GetStockObject(int i)",
+          "parameters": ["int i"],
+          "return_type": "HGDIOBJ"
+        },
+        "TextOutA": {
+          "signature": "BOOL TextOutA(HDC hdc, int x, int y, LPCSTR lpString, int c)",
+          "parameters": ["HDC hdc", "int x", "int y", "LPCSTR lpString", "int c"],
+          "return_type": "BOOL"
+        },
+        "CombineRgn": {
+          "signature": "int CombineRgn(HRGN hrgnDst, HRGN hrgnSrc1, HRGN hrgnSrc2, int iMode)",
+          "parameters": ["HRGN hrgnDst", "HRGN hrgnSrc1", "HRGN hrgnSrc2", "int iMode"],
+          "return_type": "int"
+        }
+      }
+    },
+    "shell32": {
+      "header": "windows.h",
+      "library": "shell32",
+      "calling_convention": "stdcall",
+      "functions": {
+        "ShellExecute": {
+          "signature": "HINSTANCE ShellExecute(HWND hwnd, LPCSTR lpOperation, LPCSTR lpFile, LPCSTR lpParameters, LPCSTR lpDirectory, INT nShowCmd)",
+          "parameters": ["HWND hwnd", "LPCSTR lpOperation", "LPCSTR lpFile", "LPCSTR lpParameters", "LPCSTR lpDirectory", "INT nShowCmd"],
+          "return_type": "HINSTANCE"
+        },
+        "SHGetFolderPath": {
+          "signature": "HRESULT SHGetFolderPath(HWND hwnd, int csidl, HANDLE hToken, DWORD dwFlags, LPSTR pszPath)",
+          "parameters": ["HWND hwnd", "int csidl", "HANDLE hToken", "DWORD dwFlags", "LPSTR pszPath"],
+          "return_type": "HRESULT"
+        },
+        "SHGetSpecialFolderPath": {
+          "signature": "BOOL SHGetSpecialFolderPath(HWND hwnd, LPSTR pszPath, int csidl, BOOL fCreate)",
+          "parameters": ["HWND hwnd", "LPSTR pszPath", "int csidl", "BOOL fCreate"],
+          "return_type": "BOOL"
+        },
+        "ShellExecuteA": {
+          "signature": "HINSTANCE ShellExecuteA(HWND hwnd, LPCSTR lpOperation, LPCSTR lpFile, LPCSTR lpParameters, LPCSTR lpDirectory, INT nShowCmd)",
+          "parameters": ["HWND hwnd", "LPCSTR lpOperation", "LPCSTR lpFile", "LPCSTR lpParameters", "LPCSTR lpDirectory", "INT nShowCmd"],
+          "return_type": "HINSTANCE"
+        }
+      }
+    },
+    "ole32": {
+      "header": "windows.h",
+      "library": "ole32",
+      "calling_convention": "stdcall",
+      "functions": {
+        "CoInitialize": {
+          "signature": "HRESULT CoInitialize(LPVOID pvReserved)",
+          "parameters": ["LPVOID pvReserved"],
+          "return_type": "HRESULT"
+        },
+        "CoUninitialize": {
+          "signature": "void CoUninitialize(void)",
+          "parameters": [],
+          "return_type": "void"
+        },
+        "CoCreateInstance": {
+          "signature": "HRESULT CoCreateInstance(REFCLSID rclsid, LPUNKNOWN pUnkOuter, DWORD dwClsContext, REFIID riid, LPVOID *ppv)",
+          "parameters": ["REFCLSID rclsid", "LPUNKNOWN pUnkOuter", "DWORD dwClsContext", "REFIID riid", "LPVOID *ppv"],
+          "return_type": "HRESULT"
+        }
+      }
+    },
+    "winmm": {
+      "header": "windows.h",
+      "library": "winmm",
+      "calling_convention": "stdcall",
+      "functions": {
+        "timeGetTime": {
+          "signature": "DWORD timeGetTime(void)",
+          "parameters": [],
+          "return_type": "DWORD"
+        },
+        "PlaySound": {
+          "signature": "BOOL PlaySound(LPCSTR pszSound, HMODULE hmod, DWORD fdwSound)",
+          "parameters": ["LPCSTR pszSound", "HMODULE hmod", "DWORD fdwSound"],
+          "return_type": "BOOL"
+        },
+        "waveOutOpen": {
+          "signature": "MMRESULT waveOutOpen(LPHWAVEOUT phwo, UINT uDeviceID, LPCWAVEFORMATEX pwfx, DWORD_PTR dwCallback, DWORD_PTR dwInstance, DWORD fdwOpen)",
+          "parameters": ["LPHWAVEOUT phwo", "UINT uDeviceID", "LPCWAVEFORMATEX pwfx", "DWORD_PTR dwCallback", "DWORD_PTR dwInstance", "DWORD fdwOpen"],
+          "return_type": "MMRESULT"
+        },
+        "waveOutClose": {
+          "signature": "MMRESULT waveOutClose(HWAVEOUT hwo)",
+          "parameters": ["HWAVEOUT hwo"],
+          "return_type": "MMRESULT"
         }
       }
     }
