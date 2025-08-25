@@ -38,7 +38,7 @@ FLOSS_ARGS     = os.getenv("FLOSS_ARGS", "")
 FLOSS_MINLEN   = os.getenv("FLOSS_MINLEN", "")
 FLOSS_PER_FN   = int(os.getenv("FLOSS_PER_FN", "20") or 20)
 
-CAPA_TIMEOUT   = int(os.getenv("HUNT_CAPA_TIMEOUT", "180") or 180)
+CAPA_TIMEOUT   = int(os.getenv("CAPA_TIMEOUT", os.getenv("HUNT_CAPA_TIMEOUT", "180")) or 180)
 FLOSS_TIMEOUT = int(os.getenv("FLOSS_TIMEOUT", os.getenv("HUNT_FLOSS_TIMEOUT", "600")))
 YARA_TIMEOUT   = int(os.getenv("HUNT_YARA_TIMEOUT", "90") or 90)
 

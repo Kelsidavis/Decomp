@@ -10,7 +10,7 @@ Re-implementation Stage Enhancements:
 - Change log: write per-function *.patch.md with name, confidence, rationale.
 
 Inputs:
-  --src-dir <dir>         Source tree to modify (e.g., work/recovered_project_human/src)
+  --src-dir <dir>         Source tree to modify (e.g., work/recovered_project/src)
   --mapping <file>        functions.labeled.jsonl from Function Hunt
   --out-dir <dir>         Output source dir for reimplemented files (default work/recovered_project_reimpl/src)
   --tests-dir <dir>       Output tests dir (default work/reimplement/tests)

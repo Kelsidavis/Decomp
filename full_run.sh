@@ -105,7 +105,7 @@ if [[ "$ENABLE_YARA" == "1" && ! -d "$YARA_RULES_DIR" ]]; then
 fi
 
 # ---- FLOSS timeout (seconds) ----
-: "${FLOSS_TIMEOUT:=10}"
+: "${FLOSS_TIMEOUT:=2000}"
 export FLOSS_TIMEOUT
 # run_autodiscover.py reads HUNT_FLOSS_TIMEOUT, so mirror it here
 : "${HUNT_FLOSS_TIMEOUT:=${FLOSS_TIMEOUT}}"
@@ -114,7 +114,7 @@ echo "[full_run] FLOSS_TIMEOUT=${FLOSS_TIMEOUT}s"
 echo "[full_run] HUNT_FLOSS_TIMEOUT=${HUNT_FLOSS_TIMEOUT}s"
 
 # ---- CAPA timeout (seconds) ----
-: "${CAPA_TIMEOUT:=10}"
+: "${CAPA_TIMEOUT:=1200}"
 export CAPA_TIMEOUT
 echo "[full_run] CAPA_TIMEOUT=${CAPA_TIMEOUT}s"
 
@@ -148,23 +148,23 @@ fi
 : "${LLM_PROFILE_REIMPL:=qwen14}"   # for re-implement
 
 # Pipeline knobs
-: "${HUNT_TOPN:=10000}"
-: "${HUNT_MIN_SIZE:=0}"
+: "${HUNT_TOPN:=50000}"
+: "${HUNT_MIN_SIZE:=5}"
 : "${HUNT_CACHE:=1}"
 : "${HUNT_RESUME:=1}"
 : "${ENABLE_FLOSS:=1}"
 
 # Exporter knobs (read by ghidra_scripts/simple_export.py inside container)
-: "${GHIDRA_TIMEOUT:=9000}"          # headless wrapper will be allowed up to this many seconds
-: "${EXPORT_FLUSH_EVERY:=500}"       # rewrite valid JSON every N functions
-: "${DECOMPILE_SEC:=6}"             # per-function decompiler budget
+: "${GHIDRA_TIMEOUT:=172800}"          # headless wrapper will be allowed up to this many seconds
+: "${EXPORT_FLUSH_EVERY:=1000}"       # rewrite valid JSON every N functions
+: "${DECOMPILE_SEC:=7}"             # per-function decompiler budget
 : "${EXPORT_TOPN:=${HUNT_TOPN}}"     # mirror HUNT_TOPN unless explicitly overridden
-: "${SKIP_PSEUDO:=1}"                # 1 = metadata-only export (no decompile text)
+: "${SKIP_PSEUDO:=0}"                # 1 = metadata-only export (no decompile text)
 
 # Re-implement stage
 : "${REIMPL_ENABLE:=1}"              # set 0 to skip reimplementation
 : "${REIMPL_MIN_CONF:=0.78}"
-: "${REIMPL_MAX_FNS:=120}"
+: "${REIMPL_MAX_FNS:=10000}"
 
 # Infra
 : "${HEARTBEAT_SECS:=30}"
@@ -410,7 +410,7 @@ if [[ "$REIMPL_ENABLE" == "1" ]]; then
     stop_hb; stage_done
   else
     export REIMPL_MIN_CONF REIMPL_MAX_FNS
-    REIMPL_IN_DIR="$WORK_DIR/recovered_project_human"
+    REIMPL_IN_DIR="$WORK_DIR/recovered_project"
     REIMPL_OUT_DIR="$WORK_DIR/recovered_project_reimpl/src"
     mkdir -p "$REIMPL_OUT_DIR"
     if [[ -x "./reimplement.sh" ]]; then

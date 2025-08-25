@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-: "${SRC_DIR:=work/recovered_project_human/src}"
+: "${SRC_DIR:=work/recovered_project/src}"
 : "${OUT_DIR:=work/recovered_project_reimpl/src}"
 : "${TESTS_DIR:=work/reimplement/tests}"
 : "${MAPPING:=work/hunt/functions.labeled.jsonl}"
