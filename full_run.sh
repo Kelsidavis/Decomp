@@ -340,6 +340,34 @@ else
   fi
 fi
 
+# -------------------- process extracted assets --------------------
+if [[ -d "$WORK_DIR/extracted" && -f "$WORK_DIR/extracted/summary.json" ]]; then
+  EXTRACTED_ASSETS=$(python3 -c "import json,sys; j=json.load(sys.stdin); print(len([x for x in j.get('extracted',[]) if x.endswith('.ico') or x.endswith('.bmp') or x.endswith('.cur')]))" < "$WORK_DIR/extracted/summary.json" 2>/dev/null || echo "0")
+  if [[ "$EXTRACTED_ASSETS" -gt "0" ]]; then
+    echo "[full] processing $EXTRACTED_ASSETS extracted assets..." | _fmt | tee -a "$RUN_LOG"
+    stage "asset-processing"; start_hb
+    
+    # Process PE resources and fix ICO files
+    if [[ -f "fix_pe_resources.py" && -d "$WORK_DIR/extracted/7z" ]]; then
+      python3 fix_pe_resources.py "$WORK_DIR/extracted/7z" 2>&1 | _fmt | tee -a "$RUN_LOG" || true
+    fi
+    
+    # Embed assets into C source code
+    if [[ -f "embed_assets.py" ]]; then
+      python3 embed_assets.py "$WORK_DIR/extracted" "$WORK_DIR/recovered_project" 2>&1 | _fmt | tee -a "$RUN_LOG" || true
+    fi
+    
+    # Generate Windows resource scripts
+    if [[ -f "generate_windows_build.py" ]]; then
+      python3 generate_windows_build.py "$WORK_DIR/recovered_project" 2>&1 | _fmt | tee -a "$RUN_LOG" || true
+    fi
+    
+    stop_hb; stage_done
+  else
+    echo "[full] no extractable assets found" | _fmt | tee -a "$RUN_LOG"
+  fi
+fi
+
 # -------------------- analyze (label) with LLM4Decompile --------------------
 stage "analyze(label) with profile: ${LLM_PROFILE_LABEL}"; start_hb
 use_profile "$LLM_PROFILE_LABEL"
