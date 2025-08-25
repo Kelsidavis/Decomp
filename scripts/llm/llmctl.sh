@@ -89,6 +89,8 @@ start_profile(){
   # start detached
   ( nohup "$LLAMA_BIN" "${args[@]}" >"$log" 2>&1 & echo $! >"$PID_FILE" ) || die "failed to start llama-server"
   ln -sfn "$(basename "$log")" "$LATEST_LINK"
+  # give the server a moment to bind before first probe
+  sleep "${LLM_GRACE:-0.8}"
 
   # wait for http health
   if ! wait_for_health 60; then

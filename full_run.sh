@@ -3,6 +3,31 @@
 # Requires: scripts/llm/llmctl.sh, profiles/{llm4d.env,qwen14.env}, ghidra_scripts/simple_export.py
 set -Eeuo pipefail
 
+# If RUN_LOG isn't set yet, create a default one early so we can tail it on errors
+: "${RUN_LOG:=work/logs/full_run.$(date +%Y%m%d-%H%M%S).log}"
+mkdir -p "$(dirname "$RUN_LOG")"
+
+# Set to 0 to disable the pause (or export PAUSE_ON_EXIT=0)
+: "${PAUSE_ON_EXIT:=1}"
+
+_pause_if_tty() { [[ "$PAUSE_ON_EXIT" == "1" && -t 0 && -t 1 ]]; }
+_on_error() {
+  local ec=$? line=${BASH_LINENO[0]} cmd=${BASH_COMMAND}
+  echo -e "\n[full_run] ERROR exit=$ec at line $line: $cmd" | tee -a "$RUN_LOG"
+  # show the last chunk of the run log so you see the cause
+  tail -n 120 "$RUN_LOG" 2>/dev/null || true
+  if _pause_if_tty; then read -rp "Press Enter to close..."; fi
+  exit "$ec"
+}
+_on_exit() {
+  local ec=$?
+  [[ $ec -eq 0 ]] || return
+  if _pause_if_tty; then read -rp "Press Enter to close..."; fi
+}
+trap _on_error ERR
+trap _on_exit  EXIT
+
+
 # ---- Rules directories (project-root/rules) ----
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
