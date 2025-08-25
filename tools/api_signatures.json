@@ -1,0 +1,425 @@
+{
+  "apis": {
+    "fmod": {
+      "header": "fmod.h",
+      "library": "fmod",
+      "calling_convention": "stdcall",
+      "functions": {
+        "FSOUND_Init": {
+          "signature": "signed int FSOUND_Init(int mixrate, int maxchannels, unsigned int flags)",
+          "parameters": ["int mixrate", "int maxchannels", "unsigned int flags"],
+          "return_type": "signed int"
+        },
+        "FSOUND_Close": {
+          "signature": "void FSOUND_Close(void)",
+          "parameters": [],
+          "return_type": "void"
+        },
+        "FSOUND_Update": {
+          "signature": "void FSOUND_Update(void)",
+          "parameters": [],
+          "return_type": "void"
+        },
+        "FSOUND_GetVersion": {
+          "signature": "float FSOUND_GetVersion(void)",
+          "parameters": [],
+          "return_type": "float"
+        },
+        "FSOUND_GetError": {
+          "signature": "int FSOUND_GetError(void)",
+          "parameters": [],
+          "return_type": "int"
+        },
+        "FSOUND_GetOutput": {
+          "signature": "int FSOUND_GetOutput(void)",
+          "parameters": [],
+          "return_type": "int"
+        },
+        "FSOUND_GetDriver": {
+          "signature": "int FSOUND_GetDriver(void)",
+          "parameters": [],
+          "return_type": "int"
+        },
+        "FSOUND_SetDriver": {
+          "signature": "signed int FSOUND_SetDriver(int driver)",
+          "parameters": ["int driver"],
+          "return_type": "signed int"
+        },
+        "FSOUND_GetNumDrivers": {
+          "signature": "int FSOUND_GetNumDrivers(void)",
+          "parameters": [],
+          "return_type": "int"
+        },
+        "FSOUND_GetDriverName": {
+          "signature": "char* FSOUND_GetDriverName(int id)",
+          "parameters": ["int id"],
+          "return_type": "char*"
+        },
+        "FSOUND_GetDriverCaps": {
+          "signature": "signed int FSOUND_GetDriverCaps(int id, unsigned int *caps)",
+          "parameters": ["int id", "unsigned int *caps"],
+          "return_type": "signed int"
+        },
+        "FSOUND_GetOutputRate": {
+          "signature": "int FSOUND_GetOutputRate(void)",
+          "parameters": [],
+          "return_type": "int"
+        },
+        "FSOUND_SetOutput": {
+          "signature": "signed int FSOUND_SetOutput(int outputtype)",
+          "parameters": ["int outputtype"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetMixer": {
+          "signature": "signed int FSOUND_SetMixer(int mixer)",
+          "parameters": ["int mixer"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetBufferSize": {
+          "signature": "signed int FSOUND_SetBufferSize(int len_ms)",
+          "parameters": ["int len_ms"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetHWND": {
+          "signature": "signed int FSOUND_SetHWND(void *hwnd)",
+          "parameters": ["void *hwnd"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetMemorySystem": {
+          "signature": "signed int FSOUND_SetMemorySystem(void *pool, int poollen, void *useralloc, void *userrealloc, void *userfree)",
+          "parameters": ["void *pool", "int poollen", "void *useralloc", "void *userrealloc", "void *userfree"],
+          "return_type": "signed int"
+        },
+        "FSOUND_Stream_Open": {
+          "signature": "void* FSOUND_Stream_Open(char *name, unsigned int mode, int offset, int length)",
+          "parameters": ["char *name", "unsigned int mode", "int offset", "int length"],
+          "return_type": "void*"
+        },
+        "FSOUND_Stream_Play": {
+          "signature": "int FSOUND_Stream_Play(int channel, void *stream)",
+          "parameters": ["int channel", "void *stream"],
+          "return_type": "int"
+        },
+        "FSOUND_Stream_PlayEx": {
+          "signature": "int FSOUND_Stream_PlayEx(int channel, void *stream, void *dspunit, signed int startpaused)",
+          "parameters": ["int channel", "void *stream", "void *dspunit", "signed int startpaused"],
+          "return_type": "int"
+        },
+        "FSOUND_Stream_Stop": {
+          "signature": "signed int FSOUND_Stream_Stop(void *stream)",
+          "parameters": ["void *stream"],
+          "return_type": "signed int"
+        },
+        "FSOUND_Stream_Close": {
+          "signature": "signed int FSOUND_Stream_Close(void *stream)",
+          "parameters": ["void *stream"],
+          "return_type": "signed int"
+        },
+        "FSOUND_Stream_SetEndCallback": {
+          "signature": "signed int FSOUND_Stream_SetEndCallback(void *stream, void *callback, void *userdata)",
+          "parameters": ["void *stream", "void *callback", "void *userdata"],
+          "return_type": "signed int"
+        },
+        "FSOUND_Stream_SetLoopCount": {
+          "signature": "signed int FSOUND_Stream_SetLoopCount(void *stream, int count)",
+          "parameters": ["void *stream", "int count"],
+          "return_type": "signed int"
+        },
+        "FSOUND_Stream_GetTime": {
+          "signature": "unsigned int FSOUND_Stream_GetTime(void *stream)",
+          "parameters": ["void *stream"],
+          "return_type": "unsigned int"
+        },
+        "FSOUND_Stream_SetTime": {
+          "signature": "signed int FSOUND_Stream_SetTime(void *stream, unsigned int ms)",
+          "parameters": ["void *stream", "unsigned int ms"],
+          "return_type": "signed int"
+        },
+        "FSOUND_Stream_GetSample": {
+          "signature": "void* FSOUND_Stream_GetSample(void *stream)",
+          "parameters": ["void *stream"],
+          "return_type": "void*"
+        },
+        "FSOUND_SetVolume": {
+          "signature": "signed int FSOUND_SetVolume(int channel, int vol)",
+          "parameters": ["int channel", "int vol"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetFrequency": {
+          "signature": "signed int FSOUND_SetFrequency(int channel, int freq)",
+          "parameters": ["int channel", "int freq"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetPaused": {
+          "signature": "signed int FSOUND_SetPaused(int channel, signed int paused)",
+          "parameters": ["int channel", "signed int paused"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetMute": {
+          "signature": "signed int FSOUND_SetMute(int channel, signed int mute)",
+          "parameters": ["int channel", "signed int mute"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetReserved": {
+          "signature": "signed int FSOUND_SetReserved(int channel, signed int reserved)",
+          "parameters": ["int channel", "signed int reserved"],
+          "return_type": "signed int"
+        },
+        "FSOUND_StopSound": {
+          "signature": "signed int FSOUND_StopSound(int channel)",
+          "parameters": ["int channel"],
+          "return_type": "signed int"
+        },
+        "FSOUND_IsPlaying": {
+          "signature": "signed int FSOUND_IsPlaying(int channel)",
+          "parameters": ["int channel"],
+          "return_type": "signed int"
+        },
+        "FSOUND_3D_SetAttributes": {
+          "signature": "signed int FSOUND_3D_SetAttributes(int channel, float *pos, float *vel)",
+          "parameters": ["int channel", "float *pos", "float *vel"],
+          "return_type": "signed int"
+        },
+        "FSOUND_3D_SetDistanceFactor": {
+          "signature": "void FSOUND_3D_SetDistanceFactor(float scale)",
+          "parameters": ["float scale"],
+          "return_type": "void"
+        },
+        "FSOUND_3D_SetDopplerFactor": {
+          "signature": "void FSOUND_3D_SetDopplerFactor(float scale)",
+          "parameters": ["float scale"],
+          "return_type": "void"
+        },
+        "FSOUND_3D_SetRolloffFactor": {
+          "signature": "void FSOUND_3D_SetRolloffFactor(float scale)",
+          "parameters": ["float scale"],
+          "return_type": "void"
+        },
+        "FSOUND_3D_Listener_SetAttributes": {
+          "signature": "void FSOUND_3D_Listener_SetAttributes(float *pos, float *vel, float fx, float fy, float fz, float tx, float ty, float tz)",
+          "parameters": ["float *pos", "float *vel", "float fx", "float fy", "float fz", "float tx", "float ty", "float tz"],
+          "return_type": "void"
+        },
+        "FSOUND_3D_Listener_GetAttributes": {
+          "signature": "void FSOUND_3D_Listener_GetAttributes(float *pos, float *vel, float *fx, float *fy, float *fz, float *tx, float *ty, float *tz)",
+          "parameters": ["float *pos", "float *vel", "float *fx", "float *fy", "float *fz", "float *tx", "float *ty", "float *tz"],
+          "return_type": "void"
+        },
+        "FSOUND_Sample_SetMinMaxDistance": {
+          "signature": "signed int FSOUND_Sample_SetMinMaxDistance(void *sptr, float mindist, float maxdist)",
+          "parameters": ["void *sptr", "float mindist", "float maxdist"],
+          "return_type": "signed int"
+        },
+        "FSOUND_Reverb_SetProperties": {
+          "signature": "signed int FSOUND_Reverb_SetProperties(void *prop)",
+          "parameters": ["void *prop"],
+          "return_type": "signed int"
+        },
+        "FSOUND_Reverb_SetChannelProperties": {
+          "signature": "signed int FSOUND_Reverb_SetChannelProperties(int channel, void *prop)",
+          "parameters": ["int channel", "void *prop"],
+          "return_type": "signed int"
+        },
+        "FSOUND_GetMixer": {
+          "signature": "int FSOUND_GetMixer(void)",
+          "parameters": [],
+          "return_type": "int"
+        },
+        "FSOUND_GetMaxChannels": {
+          "signature": "int FSOUND_GetMaxChannels(void)",
+          "parameters": [],
+          "return_type": "int"
+        },
+        "FSOUND_GetNumHWChannels": {
+          "signature": "signed int FSOUND_GetNumHWChannels(int *num2d, int *num3d, int *total)",
+          "parameters": ["int *num2d", "int *num3d", "int *total"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetMaxHardwareChannels": {
+          "signature": "signed int FSOUND_SetMaxHardwareChannels(int max2d)",
+          "parameters": ["int max2d"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetMinHardwareChannels": {
+          "signature": "signed int FSOUND_SetMinHardwareChannels(int min2d)",
+          "parameters": ["int min2d"],
+          "return_type": "signed int"
+        },
+        "FSOUND_SetSFXMasterVolume": {
+          "signature": "signed int FSOUND_SetSFXMasterVolume(int volume)",
+          "parameters": ["int volume"],
+          "return_type": "signed int"
+        },
+        "FSOUND_File_SetCallbacks": {
+          "signature": "void FSOUND_File_SetCallbacks(void *OpenCallback, void *CloseCallback, void *ReadCallback, void *SeekCallback, void *TellCallback)",
+          "parameters": ["void *OpenCallback", "void *CloseCallback", "void *ReadCallback", "void *SeekCallback", "void *TellCallback"],
+          "return_type": "void"
+        }
+      }
+    },
+    "kernel32": {
+      "header": "windows.h",
+      "library": "kernel32",
+      "calling_convention": "stdcall",
+      "functions": {
+        "GetCurrentProcessId": {
+          "signature": "DWORD GetCurrentProcessId(void)",
+          "parameters": [],
+          "return_type": "DWORD"
+        },
+        "GetCurrentThreadId": {
+          "signature": "DWORD GetCurrentThreadId(void)",
+          "parameters": [],
+          "return_type": "DWORD"
+        },
+        "GetModuleHandleA": {
+          "signature": "HMODULE GetModuleHandleA(LPCSTR lpModuleName)",
+          "parameters": ["LPCSTR lpModuleName"],
+          "return_type": "HMODULE"
+        },
+        "GetModuleHandleW": {
+          "signature": "HMODULE GetModuleHandleW(LPCWSTR lpModuleName)",
+          "parameters": ["LPCWSTR lpModuleName"],
+          "return_type": "HMODULE"
+        },
+        "LoadLibraryA": {
+          "signature": "HMODULE LoadLibraryA(LPCSTR lpLibFileName)",
+          "parameters": ["LPCSTR lpLibFileName"],
+          "return_type": "HMODULE"
+        },
+        "LoadLibraryW": {
+          "signature": "HMODULE LoadLibraryW(LPCWSTR lpLibFileName)",
+          "parameters": ["LPCWSTR lpLibFileName"],
+          "return_type": "HMODULE"
+        },
+        "FreeLibrary": {
+          "signature": "BOOL FreeLibrary(HMODULE hLibModule)",
+          "parameters": ["HMODULE hLibModule"],
+          "return_type": "BOOL"
+        },
+        "GetProcAddress": {
+          "signature": "FARPROC GetProcAddress(HMODULE hModule, LPCSTR lpProcName)",
+          "parameters": ["HMODULE hModule", "LPCSTR lpProcName"],
+          "return_type": "FARPROC"
+        },
+        "CreateFileA": {
+          "signature": "HANDLE CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile)",
+          "parameters": ["LPCSTR lpFileName", "DWORD dwDesiredAccess", "DWORD dwShareMode", "LPSECURITY_ATTRIBUTES lpSecurityAttributes", "DWORD dwCreationDisposition", "DWORD dwFlagsAndAttributes", "HANDLE hTemplateFile"],
+          "return_type": "HANDLE"
+        },
+        "ReadFile": {
+          "signature": "BOOL ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, LPDWORD lpNumberOfBytesRead, LPOVERLAPPED lpOverlapped)",
+          "parameters": ["HANDLE hFile", "LPVOID lpBuffer", "DWORD nNumberOfBytesToRead", "LPDWORD lpNumberOfBytesRead", "LPOVERLAPPED lpOverlapped"],
+          "return_type": "BOOL"
+        },
+        "WriteFile": {
+          "signature": "BOOL WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite, LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped)",
+          "parameters": ["HANDLE hFile", "LPCVOID lpBuffer", "DWORD nNumberOfBytesToWrite", "LPDWORD lpNumberOfBytesWritten", "LPOVERLAPPED lpOverlapped"],
+          "return_type": "BOOL"
+        },
+        "CloseHandle": {
+          "signature": "BOOL CloseHandle(HANDLE hObject)",
+          "parameters": ["HANDLE hObject"],
+          "return_type": "BOOL"
+        },
+        "GetLastError": {
+          "signature": "DWORD GetLastError(void)",
+          "parameters": [],
+          "return_type": "DWORD"
+        },
+        "SetLastError": {
+          "signature": "void SetLastError(DWORD dwErrCode)",
+          "parameters": ["DWORD dwErrCode"],
+          "return_type": "void"
+        },
+        "GetTickCount": {
+          "signature": "DWORD GetTickCount(void)",
+          "parameters": [],
+          "return_type": "DWORD"
+        },
+        "Sleep": {
+          "signature": "void Sleep(DWORD dwMilliseconds)",
+          "parameters": ["DWORD dwMilliseconds"],
+          "return_type": "void"
+        },
+        "ExitProcess": {
+          "signature": "void ExitProcess(UINT uExitCode)",
+          "parameters": ["UINT uExitCode"],
+          "return_type": "void"
+        }
+      }
+    },
+    "user32": {
+      "header": "windows.h",
+      "library": "user32",
+      "calling_convention": "stdcall",
+      "functions": {
+        "MessageBoxA": {
+          "signature": "int MessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType)",
+          "parameters": ["HWND hWnd", "LPCSTR lpText", "LPCSTR lpCaption", "UINT uType"],
+          "return_type": "int"
+        },
+        "MessageBoxW": {
+          "signature": "int MessageBoxW(HWND hWnd, LPCWSTR lpText, LPCWSTR lpCaption, UINT uType)",
+          "parameters": ["HWND hWnd", "LPCWSTR lpText", "LPCWSTR lpCaption", "UINT uType"],
+          "return_type": "int"
+        },
+        "CreateWindowExA": {
+          "signature": "HWND CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpWindowName, DWORD dwStyle, int X, int Y, int nWidth, int nHeight, HWND hWndParent, HMENU hMenu, HINSTANCE hInstance, LPVOID lpParam)",
+          "parameters": ["DWORD dwExStyle", "LPCSTR lpClassName", "LPCSTR lpWindowName", "DWORD dwStyle", "int X", "int Y", "int nWidth", "int nHeight", "HWND hWndParent", "HMENU hMenu", "HINSTANCE hInstance", "LPVOID lpParam"],
+          "return_type": "HWND"
+        },
+        "FindWindowA": {
+          "signature": "HWND FindWindowA(LPCSTR lpClassName, LPCSTR lpWindowName)",
+          "parameters": ["LPCSTR lpClassName", "LPCSTR lpWindowName"],
+          "return_type": "HWND"
+        },
+        "GetWindowTextA": {
+          "signature": "int GetWindowTextA(HWND hWnd, LPSTR lpString, int nMaxCount)",
+          "parameters": ["HWND hWnd", "LPSTR lpString", "int nMaxCount"],
+          "return_type": "int"
+        },
+        "SetWindowTextA": {
+          "signature": "BOOL SetWindowTextA(HWND hWnd, LPCSTR lpString)",
+          "parameters": ["HWND hWnd", "LPCSTR lpString"],
+          "return_type": "BOOL"
+        },
+        "ShowWindow": {
+          "signature": "BOOL ShowWindow(HWND hWnd, int nCmdShow)",
+          "parameters": ["HWND hWnd", "int nCmdShow"],
+          "return_type": "BOOL"
+        },
+        "UpdateWindow": {
+          "signature": "BOOL UpdateWindow(HWND hWnd)",
+          "parameters": ["HWND hWnd"],
+          "return_type": "BOOL"
+        },
+        "DestroyWindow": {
+          "signature": "BOOL DestroyWindow(HWND hWnd)",
+          "parameters": ["HWND hWnd"],
+          "return_type": "BOOL"
+        },
+        "GetMessage": {
+          "signature": "BOOL GetMessage(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax)",
+          "parameters": ["LPMSG lpMsg", "HWND hWnd", "UINT wMsgFilterMin", "UINT wMsgFilterMax"],
+          "return_type": "BOOL"
+        },
+        "PeekMessage": {
+          "signature": "BOOL PeekMessage(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg)",
+          "parameters": ["LPMSG lpMsg", "HWND hWnd", "UINT wMsgFilterMin", "UINT wMsgFilterMax", "UINT wRemoveMsg"],
+          "return_type": "BOOL"
+        },
+        "TranslateMessage": {
+          "signature": "BOOL TranslateMessage(const MSG *lpMsg)",
+          "parameters": ["const MSG *lpMsg"],
+          "return_type": "BOOL"
+        },
+        "DispatchMessage": {
+          "signature": "LRESULT DispatchMessage(const MSG *lpMsg)",
+          "parameters": ["const MSG *lpMsg"],
+          "return_type": "LRESULT"
+        }
+      }
+    }
+  }
+}

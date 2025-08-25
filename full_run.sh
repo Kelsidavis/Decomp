@@ -149,7 +149,7 @@ fi
 
 # Pipeline knobs
 : "${HUNT_TOPN:=50000}"
-: "${HUNT_MIN_SIZE:=5}"
+: "${HUNT_MIN_SIZE:=0}"
 : "${HUNT_CACHE:=1}"
 : "${HUNT_RESUME:=1}"
 : "${ENABLE_FLOSS:=1}"
@@ -502,14 +502,41 @@ else
   echo "[full] re-implement disabled (REIMPL_ENABLE=0)" | _fmt | tee -a "$RUN_LOG"
 fi
 
+# -------------------- resolve external APIs --------------------
+if [[ -d "$WORK_DIR/recovered_project/src" && -f "tools/resolve_external_apis.py" ]]; then
+  echo "[full] resolving external API dependencies..." | _fmt | tee -a "$RUN_LOG"
+  stage "api-resolution"; start_hb
+  
+  python3 tools/resolve_external_apis.py "$WORK_DIR/recovered_project" 2>&1 | _fmt | tee -a "$RUN_LOG" || true
+  
+  # Count resolved APIs
+  if [[ -f "$WORK_DIR/recovered_project/external_linkage.json" ]]; then
+    API_COUNT=$(python3 -c "import json; data=json.load(open('$WORK_DIR/recovered_project/external_linkage.json')); print(sum(lib['count'] for lib in data['libraries'].values()))" 2>/dev/null || echo "0")
+    echo "[full] resolved $API_COUNT external API functions" | _fmt | tee -a "$RUN_LOG"
+  fi
+  
+  stop_hb; stage_done
+fi
+
 # -------------------- finalize project with detected language --------------------
 if [[ -d "$WORK_DIR/recovered_project/src" ]]; then
   echo "[full] finalizing project structure for $DETECTED_LANG..." | _fmt | tee -a "$RUN_LOG"
   
-  # Generate or update Makefile based on detected language
+  # Generate or update Makefile based on detected language and external APIs
   if [[ ! -f "$WORK_DIR/recovered_project/Makefile" ]]; then
+    # Check for external API linkage info
+    LIBS=""
+    if [[ -f "$WORK_DIR/recovered_project/external_linkage.json" ]]; then
+      # Extract Windows libraries from linkage info
+      LIBS=$(python3 -c "import json, sys; data=json.load(sys.stdin); print(' '.join(['-l'+lib for lib in data['build_flags']['windows']['libs']]))" < "$WORK_DIR/recovered_project/external_linkage.json" 2>/dev/null || echo "")
+      if [[ "$LIBS" ]]; then
+        echo "[full] detected external library dependencies: $LIBS" | _fmt | tee -a "$RUN_LOG"
+      fi
+    fi
+
     MAKEFILE_CONTENT="CC=gcc
 CFLAGS=-Wall -Wextra -O2 -Iinclude
+LDFLAGS=$LIBS
 SRCS=\$(wildcard src/*.c)
 OBJS=\$(SRCS:.c=.o)
 BIN=recovered_bin
@@ -517,17 +544,23 @@ BIN=recovered_bin
 all: \$(BIN)
 
 \$(BIN): \$(OBJS)
-	\$(CC) \$(CFLAGS) -o \$@ \$^
+	\$(CC) \$(CFLAGS) -o \$@ \$^ \$(LDFLAGS)
 
 clean:
-	rm -f \$(OBJS) \$(BIN)"
+	rm -f \$(OBJS) \$(BIN)
+
+install:
+	@echo \"Build completed. Binary: \$(BIN)\"
+	@echo \"External dependencies: $LIBS\"
+
+.PHONY: all clean install"
 
     if [[ "$DETECTED_LANG" == "cpp" ]]; then
       MAKEFILE_CONTENT=$(echo "$MAKEFILE_CONTENT" | sed 's/CC=gcc/CXX=g++/g' | sed 's/wildcard src\/\*\.c/wildcard src\/*.cpp/g' | sed 's/SRCS:\.c=\.o/SRCS:.cpp=.o/g' | sed 's/\$(CC)/$(CXX)/g')
     fi
     
     echo "$MAKEFILE_CONTENT" > "$WORK_DIR/recovered_project/Makefile"
-    echo "[full] generated Makefile for $DETECTED_LANG" | _fmt | tee -a "$RUN_LOG"
+    echo "[full] generated Makefile for $DETECTED_LANG with external library support" | _fmt | tee -a "$RUN_LOG"
   fi
   
   # Create simple README
