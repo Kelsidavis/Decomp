@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# full_run.sh — pre-unpack → export via docker (entrypoint) → analyze+humanize
-# - Guard against sourcing; must be executed
-# - Heartbeat is always cleaned up via traps on EXIT/INT/TERM
+# full_run.sh — pre-unpack → ghidra export → analyze(label) with LLM4D → humanize → (opt) reimplement with Qwen
+# Requires: scripts/llm/llmctl.sh, profiles/{llm4d.env,qwen14.env}
 set -Eeuo pipefail
 
-# -------- guard: don't allow sourcing --------
+# ---- guard: don't source ----
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   echo "[error] Don't source this script. Run it as: ./full_run.sh"
   return 2 2>/dev/null || exit 2
 fi
 
-# -------------------- defaults / config --------------------
+# -------------------- config --------------------
 : "${WORK_DIR:=work}"
-: "${GHIDRA_IMAGE:=decomp-ghidra-llm:latest}"   # slim exporter image with entrypoint
+: "${GHIDRA_IMAGE:=decomp-ghidra-llm:latest}"
 : "${GHIDRA_SCRIPT:=simple_export.py}"
 if [[ -d "ghidra_scripts" ]]; then
   GHIDRA_SCRIPT_DIR="ghidra_scripts"
@@ -22,9 +21,12 @@ else
   GHIDRA_SCRIPT_DIR="ghidra_scripts"
 fi
 
-: "${LLM_ENDPOINT:=http://127.0.0.1:8080/v1/chat/completions}"
-: "${LLM_MODEL:=Qwen3-14B-UD-Q5_K_XL.gguf}"
+# LLM control (single port 8080)
+: "${LLMCTL:=scripts/llm/llmctl.sh}"
+: "${LLM_PROFILE_LABEL:=llm4d}"     # for analyze/label
+: "${LLM_PROFILE_REIMPL:=qwen14}"   # for re-implement
 
+# Pipeline knobs
 : "${HUNT_TOPN:=1000}"
 : "${HUNT_MIN_SIZE:=0}"
 : "${HUNT_CACHE:=1}"
@@ -33,16 +35,22 @@ fi
 : "${ENABLE_YARA:=1}"
 : "${ENABLE_FLOSS:=1}"
 
+# Re-implement stage
+: "${REIMPL_ENABLE:=1}"             # set 0 to skip
+: "${REIMPL_MIN_CONF:=0.78}"
+: "${REIMPL_MAX_FNS:=120}"
+
+# Infra
 : "${HEARTBEAT_SECS:=30}"
 : "${GHIDRA_TIMEOUT:=1800}"
+: "${CLEAN_OLD_LOGS:=1}"
 
 mkdir -p "$WORK_DIR/logs" "$WORK_DIR/snapshots" "$WORK_DIR/gh_proj"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_LOG="$WORK_DIR/logs/full_run.${STAMP}.log"
 
-# Clean previous "latest" pointer; keep only this run’s log if desired
-: "${CLEAN_OLD_LOGS:=1}"
+# fresh "latest" pointer; prune old logs if desired
 rm -f "$WORK_DIR/logs/latest_full_run.log" 2>/dev/null || true
 ln -sfn "$(basename "$RUN_LOG")" "$WORK_DIR/logs/latest_full_run.log"
 if [[ "$CLEAN_OLD_LOGS" == "1" ]]; then
@@ -50,54 +58,59 @@ if [[ "$CLEAN_OLD_LOGS" == "1" ]]; then
     ! -name "$(basename "$RUN_LOG")" -delete 2>/dev/null || true
 fi
 
-# Pretty timestamp wrapper for piped logs
-_fmt() { while IFS= read -r line; do printf '[%s] %s\n' "$(date +%T)" "$line"; done; }
+_fmt(){ while IFS= read -r line; do printf '[%s] %s\n' "$(date +%T)" "$line"; done; }
 
-# -------- heartbeat (auto-stops via trap) --------
+# ---- heartbeat (auto-clean) ----
 HB_PID=""
-start_hb() {
+start_hb(){
   (
-    parent_pid=$$
+    parent=$$
     while :; do
-      # stop if parent pid no longer exists
-      kill -0 "$parent_pid" 2>/dev/null || exit 0
+      kill -0 "$parent" 2>/dev/null || exit 0
       echo "[hb] alive"
-      sleep "${HEARTBEAT_SECS}"
+      sleep "$HEARTBEAT_SECS"
     done
   ) & HB_PID=$!
 }
-stop_hb() {
+stop_hb(){
   if [[ -n "${HB_PID}" ]]; then
-    kill "${HB_PID}" 2>/dev/null || true
-    wait "${HB_PID}" 2>/dev/null || true
+    kill "$HB_PID" 2>/dev/null || true
+    wait "$HB_PID" 2>/dev/null || true
     HB_PID=""
   fi
 }
-
-cleanup() {
-  ec=$?
-  stop_hb
-  exit "$ec"
-}
+cleanup(){ ec=$?; stop_hb; exit "$ec"; }
 trap cleanup EXIT INT TERM
 
-# Stage timing helpers
-stage() { STAGE_NAME="$1"; STAGE_T0="$(date +%s)"; echo "[$(date +%T)] >>> $STAGE_NAME …"; }
-stage_done() { local t1="$(date +%s)"; printf "[%s] <<< %s done in %ds\n" "$(date +%T)" "$STAGE_NAME" "$((t1-STAGE_T0))"; }
+stage(){ STAGE_NAME="$1"; STAGE_T0="$(date +%s)"; echo "[$(date +%T)] >>> $STAGE_NAME …"; }
+stage_done(){ local t1="$(date +%s)"; printf "[%s] <<< %s done in %ds\n" "$(date +%T)" "$STAGE_NAME" "$((t1-STAGE_T0))"; }
 
-# Log header
+# ---- LLM profile helpers (single port 8080) ----
+need_llmctl(){ [[ -x "$LLMCTL" ]] || { echo "[full] ERROR: LLM controller not found: $LLMCTL" | _fmt | tee -a "$RUN_LOG"; exit 3; }; }
+use_profile(){
+  local prof="$1"
+  need_llmctl
+  # switch always (ensures only one server runs, VRAM safe)
+  "$LLMCTL" switch "$prof" | _fmt | tee -a "$RUN_LOG"
+  # export env for this stage
+  eval "$("$LLMCTL" env "$prof")"
+  export LLM_ENDPOINT LLM_MODEL
+  echo "[full] LLM active: $prof  → $LLM_MODEL @ $LLM_ENDPOINT" | _fmt | tee -a "$RUN_LOG"
+}
+
+# ---- header ----
 {
   echo "================================================"
   echo " Decomp full run"
   echo " Timestamp:     ${STAMP}"
   echo " Log:           ${RUN_LOG}"
   echo " Work dir:      ${WORK_DIR}"
-  echo " LLM:           ${LLM_MODEL} @ ${LLM_ENDPOINT}"
   echo " HUNT_TOPN:     ${HUNT_TOPN}   HUNT_MIN: ${HUNT_MIN_SIZE}"
   echo " Resume/Cache:  ${HUNT_RESUME}/${HUNT_CACHE}"
   echo " CAPA/YARA:     ${ENABLE_CAPA}/${ENABLE_YARA}   FLOSS: ${ENABLE_FLOSS}"
   echo " Export script: ${GHIDRA_SCRIPT_DIR}/${GHIDRA_SCRIPT}"
-  echo " REIMPL:        threshold=${REIMPL_MIN_CONF:-0.78}  max_fns=${REIMPL_MAX_FNS:-120}"
+  echo " LLM profiles:  label=${LLM_PROFILE_LABEL}  reimpl=${LLM_PROFILE_REIMPL}"
+  echo " REIMPL:        enabled=${REIMPL_ENABLE}  threshold=${REIMPL_MIN_CONF}  max_fns=${REIMPL_MAX_FNS}"
   echo "================================================"
 } | _fmt | tee -a "$RUN_LOG"
 
@@ -144,7 +157,7 @@ else
 fi
 stop_hb; stage_done
 
-# -------------------- ensure export JSON exists --------------------
+# -------------------- export via docker (Ghidra headless) --------------------
 base="$(basename "${HUNT_BIN%.*}")"
 OUT_HOST="$WORK_DIR/snapshots/${base}_out.json"
 OUT_CONT="/work/snapshots/${base}_out.json"
@@ -176,11 +189,50 @@ else
   fi
 fi
 
-# -------------------- analyze + humanize --------------------
-stage "analyze + humanize"; start_hb
-export LLM_ENDPOINT LLM_MODEL HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS
-./humanize.sh 2>&1 | _fmt | tee -a "$RUN_LOG"
+# -------------------- analyze (label) with LLM4Decompile --------------------
+stage "analyze(label) with profile: ${LLM_PROFILE_LABEL}"; start_hb
+use_profile "$LLM_PROFILE_LABEL"
+export HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS
+# Call the analyzer directly so we can change model later before humanize
+stdbuf -oL -eL python3 tools/function_hunt/run_autodiscover.py 2>&1 | _fmt | tee -a "$RUN_LOG"
 stop_hb; stage_done
+
+JSONL="work/hunt/functions.labeled.jsonl"
+if [[ ! -s "$JSONL" ]]; then
+  echo "[full] ERROR: expected mapping not found: $JSONL" | _fmt | tee -a "$RUN_LOG"
+  exit 4
+fi
+
+# -------------------- humanize (no LLM) --------------------
+stage "humanize (AST-safe rename)"; start_hb
+SRC_DIR="work/recovered_project/src"
+OUT_DIR="work/recovered_project_human"
+mkdir -p "$(dirname "$OUT_DIR")"
+stdbuf -oL -eL python3 tools/humanize_source.py \
+  --src-dir "$SRC_DIR" \
+  --out-dir "$OUT_DIR" \
+  --mapping "$JSONL" 2>&1 | _fmt | tee -a "$RUN_LOG"
+stop_hb; stage_done
+
+# -------------------- re-implement (Qwen) --------------------
+if [[ "$REIMPL_ENABLE" == "1" ]]; then
+  stage "re-implement with profile: ${LLM_PROFILE_REIMPL}"; start_hb
+  use_profile "$LLM_PROFILE_REIMPL"
+  export REIMPL_MIN_CONF REIMPL_MAX_FNS
+  if [[ -x "./reimplement.sh" ]]; then
+    stdbuf -oL -eL ./reimplement.sh 2>&1 | _fmt | tee -a "$RUN_LOG"
+  else
+    # Call python directly if no wrapper
+    stdbuf -oL -eL python3 tools/reimplement.py \
+      --src-dir "$OUT_DIR" \
+      --mapping "$JSONL" \
+      --min-conf "$REIMPL_MIN_CONF" \
+      --max-fns "$REIMPL_MAX_FNS" 2>&1 | _fmt | tee -a "$RUN_LOG"
+  fi
+  stop_hb; stage_done
+else
+  echo "[full] re-implement disabled (REIMPL_ENABLE=0)" | _fmt | tee -a "$RUN_LOG"
+fi
 
 echo "[full] DONE. See log: $RUN_LOG" | _fmt | tee -a "$RUN_LOG"
 
