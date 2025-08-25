@@ -19,10 +19,11 @@ set -euo pipefail
 # Re-implementation defaults
 : "${REIMPL_THRESHOLD:=0.78}"
 : "${REIMPL_MAX_FNS:=120}"
+: "${REIMPL:=1}"   # keep enabled by default as in your current script
 
+# AST fake headers (vendored by default)
 : "${FAKE_LIBC_DIR:=$PWD/tools/fake_libc_include}"
 export FAKE_LIBC_DIR
-
 
 DO_PREFLIGHT=1
 RESET_RUN=0
@@ -69,37 +70,82 @@ RUN_LOG="$WORK_DIR/logs/full_run.${STAMP}.log"
 export WORK_DIR LLM_ENDPOINT LLM_MODEL HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS
 export REIMPL_THRESHOLD REIMPL_MAX_FNS
 
-# tee everything to the log
-exec > >(stdbuf -oL -eL tee -a "$RUN_LOG") 2>&1
+# --------------- Formatter (timestamps + progress + heartbeat + stage timings) ---------------
+have_gawk=0; command -v gawk >/dev/null 2>&1 && have_gawk=1
 
-echo "================================================"
-echo " Decomp full run"
-echo " Timestamp:     $STAMP"
-echo " Log:           $RUN_LOG"
-echo " Work dir:      $WORK_DIR"
-echo " LLM:           $LLM_MODEL @ $LLM_ENDPOINT"
-echo " HUNT_TOPN:     ${HUNT_TOPN}   HUNT_MIN: ${HUNT_MIN_SIZE}"
-echo " Resume/Cache:  ${HUNT_RESUME}/${HUNT_CACHE}"
-echo " CAPA/YARA:     ${ENABLE_CAPA}/${ENABLE_YARA}   FLOSS: ${ENABLE_FLOSS}"
-echo " REIMPL:        threshold=${REIMPL_THRESHOLD}  max_fns=${REIMPL_MAX_FNS}"
-echo "================================================"
+_ts_format_gawk() {
+  gawk '
+    function hms(sec,  h, m, s){h=int(sec/3600);m=int((sec%3600)/60);s=sec%60;return sprintf("%02d:%02d:%02d",h,m,s)}
+    BEGIN{start=systime()}
+    {
+      line=$0; now=systime(); ts=strftime("%H:%M:%S", now)
+      # progress lines from label/humanize/reimpl
+      if (match(line, /\[(llm|humanize|reimpl)\] progress[[:space:]]+([0-9]+)\/([0-9]+)/, m)) {
+        done=m[2]+0; total=m[3]+0; elapsed=now-start; pct=(total>0)?int(100*done/total):0;
+        rate=(elapsed>0 && done>0)? done/elapsed:0;
+        remain=(rate>0)? int((total-done)/rate):-1; eta=(remain>=0)? hms(remain):"??:??:??";
+        printf("[%s] %s | %d%% | elapsed %s | ETA %s\n", ts, line, pct, hms(elapsed), eta); fflush(); next
+      }
+      # heartbeat & stage timing from hunt
+      if (line ~ /^\[hunt\] heartbeat/ || line ~ /^\[hunt\] >>> / || line ~ /^\[hunt\] <<< /) {
+        printf("[%s] %s\n", ts, line); fflush(); next
+      }
+      # default
+      printf("[%s] %s\n", ts, line); fflush();
+    }'
+}
+_ts_format_sh() {
+  local start_epoch="$(date +%s)"
+  while IFS= read -r line; do
+    local now ts; now=$(date +%s); ts="$(date +%T)"
+    if [[ "$line" =~ \[(llm|humanize|reimpl)\]\ progress[[:space:]]+([0-9]+)/([0-9]+) ]]; then
+      local done="${BASH_REMATCH[2]}" total="${BASH_REMATCH[3]}"
+      local elapsed=$((now-start_epoch))
+      local pct=0; (( total > 0 )) && pct=$(( 100*done / total ))
+      local remain=-1
+      if (( elapsed>0 && done>0 )); then remain=$(( (total-done) * elapsed / done )); fi
+      local ETA="??:??:??"
+      (( remain >= 0 )) && printf -v ETA "%02d:%02d:%02d" $((remain/3600)) $(((remain%3600)/60)) $((remain%60))
+      printf "[%s] %s | %d%% | elapsed %02d:%02d:%02d | ETA %s\n" "$ts" "$line" "$pct" $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)) "$ETA"
+      continue
+    fi
+    printf "[%s] %s\n" "$ts" "$line"
+  done
+}
+_fmt() { if (( have_gawk )); then _ts_format_gawk; else _ts_format_sh; fi }
 
-# optional preflight
+# --------------- Header ---------------
+{
+  echo "================================================"
+  echo " Decomp full run"
+  echo " Timestamp:     $STAMP"
+  echo " Log:           $RUN_LOG"
+  echo " Work dir:      $WORK_DIR"
+  echo " LLM:           $LLM_MODEL @ $LLM_ENDPOINT"
+  echo " HUNT_TOPN:     ${HUNT_TOPN}   HUNT_MIN: ${HUNT_MIN_SIZE}"
+  echo " Resume/Cache:  ${HUNT_RESUME}/${HUNT_CACHE}"
+  echo " CAPA/YARA:     ${ENABLE_CAPA}/${ENABLE_YARA}   FLOSS: ${ENABLE_FLOSS}"
+  echo " REIMPL:        threshold=${REIMPL_THRESHOLD}  max_fns=${REIMPL_MAX_FNS}"
+  echo "================================================"
+} | tee -a "$RUN_LOG"
+
+# --------------- Preflight ---------------
 if (( DO_PREFLIGHT )); then
   if command -v python3 >/dev/null 2>&1; then
-    python3 tools/preflight.py --full || echo "[preflight] continuing despite warnings"
+    stdbuf -oL -eL python3 tools/preflight.py --full --strict \
+      2>&1 | _fmt | tee -a "$RUN_LOG"
   else
-    echo "[preflight] python3 not found; skipping"
+    echo "[preflight] python3 not found; skipping" | tee -a "$RUN_LOG"
   fi
 fi
 
-# optional reset
+# --------------- Optional reset ---------------
 if (( RESET_RUN )); then
   rm -f "$WORK_DIR/hunt/functions.labeled.jsonl" \
         "$WORK_DIR/hunt/label.progress" \
         "$WORK_DIR/humanize.progress" \
         "$WORK_DIR/reimpl.progress"
-  echo "[reset] cleared mapping/progress files"
+  echo "[reset] cleared mapping/progress files" | tee -a "$RUN_LOG"
 fi
 
 # --------------- Autodiscover binary (work/ root only) ---------------
@@ -127,7 +173,7 @@ try:
     e = int.from_bytes(d[0x3C:0x40], 'little')
     if e <= 0 or e > 100_000_000: raise SystemExit(1)
     raise SystemExit(0)
-except SystemExit as e:
+except SystemExit:
     raise
 except Exception:
     raise SystemExit(1)
@@ -143,58 +189,67 @@ PY
 
 BIN="$(discover_bin || true)"
 if [[ -z "${BIN:-}" ]]; then
-  echo "[full] ERROR: no candidate binary at $WORK_DIR root (expected *.exe|*.dll|*.bin) and no --bin specified."
+  echo "[full] ERROR: no candidate binary at $WORK_DIR root (expected *.exe|*.dll|*.bin) and no --bin specified." | tee -a "$RUN_LOG"
   exit 2
 fi
 export HUNT_BIN="$BIN"
-echo "[full] autodiscovered binary: $HUNT_BIN"
+echo "[full] autodiscovered binary: $HUNT_BIN" | tee -a "$RUN_LOG"
 
-# Pre-unpack SFX/packed → choose primary payload
+# --------------- Pre-unpack SFX/packed → choose primary payload ---------------
 if command -v python3 >/dev/null 2>&1; then
-  python3 tools/pre_unpack.py --bin "$HUNT_BIN" --out "$WORK_DIR/extracted" --work "$WORK_DIR" || true
+  stdbuf -oL -eL python3 tools/pre_unpack.py --bin "$HUNT_BIN" --out "$WORK_DIR/extracted" --work "$WORK_DIR" \
+    2>&1 | _fmt | tee -a "$RUN_LOG" || true
   if [[ -f "$WORK_DIR/primary_bin.txt" ]]; then
     export HUNT_BIN="$(<"$WORK_DIR/primary_bin.txt")"
-    echo "[full] using unpacked primary: $HUNT_BIN"
+    echo "[full] using unpacked primary: $HUNT_BIN" | tee -a "$RUN_LOG"
   fi
 else
-  echo "[full] WARN: python3 missing; skipping pre-unpack"
+  echo "[full] WARN: python3 missing; skipping pre-unpack" | tee -a "$RUN_LOG"
 fi
 
 if [[ ! -f "$HUNT_BIN" ]]; then
-  echo "[full] ERROR: input binary not found after pre-unpack: $HUNT_BIN"
+  echo "[full] ERROR: input binary not found after pre-unpack: $HUNT_BIN" | tee -a "$RUN_LOG"
   exit 3
 fi
 
-# Analyze + Humanize
-echo "[full] starting analyze + humanize…"
-./humanize.sh || { echo "[full] humanize pipeline failed"; exit 4; }
+# --------------- Analyze + Humanize ---------------
+echo "[full] starting analyze + humanize…" | tee -a "$RUN_LOG"
+stdbuf -oL -eL ./humanize.sh \
+  2>&1 | _fmt | tee -a "$RUN_LOG"
 
-# Re-implement (always)
+# --------------- Re-implement ---------------
 JSONL="$WORK_DIR/hunt/functions.labeled.jsonl"
 SRC_HUMAN="$WORK_DIR/recovered_project_human/src"
 OUT_REIMPL="$WORK_DIR/recovered_project_reimpl"
 
 if [[ ! -s "$JSONL" ]]; then
-  echo "[full] ERROR: mapping not found ($JSONL). Did analyze/humanize complete?"
+  echo "[full] ERROR: mapping not found ($JSONL). Did analyze/humanize complete?" | tee -a "$RUN_LOG"
   exit 5
 fi
 if [[ ! -d "$SRC_HUMAN" ]]; then
-  echo "[full] ERROR: humanized source not found ($SRC_HUMAN)"
+  echo "[full] ERROR: humanized source not found ($SRC_HUMAN)" | tee -a "$RUN_LOG"
   exit 5
 fi
 
-echo "[full] starting re-implementation…"
-python3 tools/reimplement.py \
-  --src-dir "$SRC_HUMAN" \
-  --out-dir "$OUT_REIMPL" \
-  --mapping "$JSONL" \
-  --threshold "$REIMPL_THRESHOLD" \
-  --max-fns "$REIMPL_MAX_FNS"
+if [[ "$REIMPL" == "1" ]]; then
+  echo "[full] starting re-implementation…" | tee -a "$RUN_LOG"
+  stdbuf -oL -eL python3 tools/reimplement.py \
+    --src-dir "$SRC_HUMAN" \
+    --out-dir "$OUT_REIMPL" \
+    --mapping "$JSONL" \
+    --threshold "$REIMPL_THRESHOLD" \
+    --max-fns "$REIMPL_MAX_FNS" \
+    2>&1 | _fmt | tee -a "$RUN_LOG"
+else
+  echo "[full] re-implementation disabled (REIMPL=0)" | tee -a "$RUN_LOG"
+fi
 
-echo "[full] done."
-echo "Artifacts:"
-echo "  - mapping : $JSONL"
-echo "  - human   : $SRC_HUMAN"
-echo "  - reimpl  : $OUT_REIMPL"
-echo "Log: $RUN_LOG"
+{
+  echo "[full] done."
+  echo "Artifacts:"
+  echo "  - mapping : $JSONL"
+  echo "  - human   : $SRC_HUMAN"
+  echo "  - reimpl  : $OUT_REIMPL"
+  echo "Log: $RUN_LOG"
+} | tee -a "$RUN_LOG"
 
