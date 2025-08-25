@@ -340,6 +340,25 @@ else
   fi
 fi
 
+# -------------------- detect programming language --------------------
+DETECTED_LANG="c"  # default
+if [[ -s "$OUT_HOST" && -f "tools/detect_language.py" ]]; then
+  echo "[full] detecting programming language..." | _fmt | tee -a "$RUN_LOG"
+  LANG_RESULT=$(python3 tools/detect_language.py "$OUT_HOST" 2>/dev/null) || true
+  if [[ "$LANG_RESULT" =~ "Detected language: CPP" ]]; then
+    DETECTED_LANG="cpp"
+    echo "[full] detected C++ (auto-detected)" | _fmt | tee -a "$RUN_LOG"
+  elif [[ "$LANG_RESULT" =~ "Detected language: C" ]]; then
+    DETECTED_LANG="c"
+    echo "[full] detected C (auto-detected)" | _fmt | tee -a "$RUN_LOG"
+  fi
+  # Log analysis details
+  echo "$LANG_RESULT" | grep -E "(Confidence|Reason|mangled_symbols|thiscall_count)" | while read line; do
+    echo "[full] $line" | _fmt | tee -a "$RUN_LOG"
+  done
+fi
+export DETECTED_LANG
+
 # -------------------- process extracted assets --------------------
 if [[ -d "$WORK_DIR/extracted" && -f "$WORK_DIR/extracted/summary.json" ]]; then
   EXTRACTED_ASSETS=$(python3 -c "import json,sys; j=json.load(sys.stdin); print(len([x for x in j.get('extracted',[]) if x.endswith('.ico') or x.endswith('.bmp') or x.endswith('.cur')]))" < "$WORK_DIR/extracted/summary.json" 2>/dev/null || echo "0")
@@ -366,6 +385,32 @@ if [[ -d "$WORK_DIR/extracted" && -f "$WORK_DIR/extracted/summary.json" ]]; then
   else
     echo "[full] no extractable assets found" | _fmt | tee -a "$RUN_LOG"
   fi
+fi
+
+# -------------------- apply language-specific formatting --------------------
+if [[ "$DETECTED_LANG" == "cpp" && -d "$WORK_DIR/recovered_project/src" ]]; then
+  echo "[full] applying C++ formatting (detected language: $DETECTED_LANG)..." | _fmt | tee -a "$RUN_LOG"
+  stage "cpp-formatting"; start_hb
+  
+  # Rename .c files to .cpp
+  find "$WORK_DIR/recovered_project/src" -name "*.c" -exec bash -c 'mv "$1" "${1%.c}.cpp"' _ {} \;
+  
+  # Update Makefile for C++
+  if [[ -f "$WORK_DIR/recovered_project/Makefile" ]]; then
+    sed -i 's/CC=gcc/CXX=g++/g' "$WORK_DIR/recovered_project/Makefile"
+    sed -i 's/\$(wildcard src\/\*\.c)/$(wildcard src\/*.cpp)/g' "$WORK_DIR/recovered_project/Makefile"
+    sed -i 's/OBJS=\$(SRCS:\.c=\.o)/OBJS=$(SRCS:.cpp=.o)/g' "$WORK_DIR/recovered_project/Makefile"
+    sed -i 's/\$(CC)/$(CXX)/g' "$WORK_DIR/recovered_project/Makefile"
+  fi
+  
+  # Run humanize_project if available to apply C++ specific improvements
+  if [[ -f "humanize_project.py" ]]; then
+    python3 humanize_project.py --lang cpp "$WORK_DIR/recovered_project" 2>&1 | _fmt | tee -a "$RUN_LOG" || true
+  fi
+  
+  stop_hb; stage_done
+elif [[ "$DETECTED_LANG" == "c" ]]; then
+  echo "[full] using C formatting (detected language: $DETECTED_LANG)" | _fmt | tee -a "$RUN_LOG"
 fi
 
 # -------------------- analyze (label) with LLM4Decompile --------------------
@@ -455,4 +500,69 @@ if [[ "$REIMPL_ENABLE" == "1" ]]; then
   fi
 else
   echo "[full] re-implement disabled (REIMPL_ENABLE=0)" | _fmt | tee -a "$RUN_LOG"
+fi
+
+# -------------------- finalize project with detected language --------------------
+if [[ -d "$WORK_DIR/recovered_project/src" ]]; then
+  echo "[full] finalizing project structure for $DETECTED_LANG..." | _fmt | tee -a "$RUN_LOG"
+  
+  # Generate or update Makefile based on detected language
+  if [[ ! -f "$WORK_DIR/recovered_project/Makefile" ]]; then
+    MAKEFILE_CONTENT="CC=gcc
+CFLAGS=-Wall -Wextra -O2 -Iinclude
+SRCS=\$(wildcard src/*.c)
+OBJS=\$(SRCS:.c=.o)
+BIN=recovered_bin
+
+all: \$(BIN)
+
+\$(BIN): \$(OBJS)
+	\$(CC) \$(CFLAGS) -o \$@ \$^
+
+clean:
+	rm -f \$(OBJS) \$(BIN)"
+
+    if [[ "$DETECTED_LANG" == "cpp" ]]; then
+      MAKEFILE_CONTENT=$(echo "$MAKEFILE_CONTENT" | sed 's/CC=gcc/CXX=g++/g' | sed 's/wildcard src\/\*\.c/wildcard src\/*.cpp/g' | sed 's/SRCS:\.c=\.o/SRCS:.cpp=.o/g' | sed 's/\$(CC)/$(CXX)/g')
+    fi
+    
+    echo "$MAKEFILE_CONTENT" > "$WORK_DIR/recovered_project/Makefile"
+    echo "[full] generated Makefile for $DETECTED_LANG" | _fmt | tee -a "$RUN_LOG"
+  fi
+  
+  # Create simple README
+  if [[ ! -f "$WORK_DIR/recovered_project/README.md" ]]; then
+    cat > "$WORK_DIR/recovered_project/README.md" << EOF
+# Recovered Project
+
+This project was decompiled and recovered using the decomp toolkit.
+
+## Language: $(echo "$DETECTED_LANG" | tr '[:lower:]' '[:upper:]')
+
+## Build Instructions
+
+\`\`\`bash
+make clean && make
+\`\`\`
+
+## Structure
+
+- \`src/\` - Recovered source code files
+- \`include/\` - Header files (including embedded resources)
+- \`Makefile\` - Build configuration
+
+## Assets
+
+This project includes $(ls "$WORK_DIR/recovered_project/include/" 2>/dev/null | wc -l) embedded resource files.
+
+EOF
+    echo "[full] generated README.md" | _fmt | tee -a "$RUN_LOG"
+  fi
+  
+  # Count generated files
+  C_FILES=$(find "$WORK_DIR/recovered_project/src" -name "*.c" 2>/dev/null | wc -l)
+  CPP_FILES=$(find "$WORK_DIR/recovered_project/src" -name "*.cpp" 2>/dev/null | wc -l)
+  TOTAL_FILES=$((C_FILES + CPP_FILES))
+  
+  echo "[full] project complete: $TOTAL_FILES source files (C: $C_FILES, C++: $CPP_FILES)" | _fmt | tee -a "$RUN_LOG"
 fi
