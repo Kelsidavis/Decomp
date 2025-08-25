@@ -3,6 +3,27 @@
 # Requires: scripts/llm/llmctl.sh, profiles/{llm4d.env,qwen14.env}, ghidra_scripts/simple_export.py
 set -Eeuo pipefail
 
+# ---- Rules directories (project-root/rules) ----
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
+RULES_DIR="${RULES_DIR:-$PROJECT_ROOT/rules}"
+
+: "${CAPA_RULES:=$RULES_DIR/capa}"
+: "${YARA_RULES_DIR:=$RULES_DIR/yara}"
+export CAPA_RULES YARA_RULES_DIR
+
+echo "[full_run] CAPA_RULES=${CAPA_RULES}"
+echo "[full_run] YARA_RULES_DIR=${YARA_RULES_DIR}"
+: "${BOOTSTRAP_RULES:=0}"   # set to 1 to auto-clone rules on first run
+if [[ "$BOOTSTRAP_RULES" == "1" ]]; then
+  [[ -d "$CAPA_RULES/.git" ]] || { mkdir -p "$CAPA_RULES"; git clone --depth=1 https://github.com/mandiant/capa-rules "$CAPA_RULES"; }
+  [[ -d "$YARA_RULES_DIR/.git" ]] || { mkdir -p "$YARA_RULES_DIR"; git clone --depth=1 https://github.com/Yara-Rules/rules "$YARA_RULES_DIR"; }
+fi
+
+# ---- FLOSS timeout (seconds) ----
+: "${FLOSS_TIMEOUT:=700}"
+export FLOSS_TIMEOUT
+
 # ---- guard: don't source ----
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   echo "[error] Don't source this script. Run it as: ./full_run.sh"
@@ -29,7 +50,7 @@ fi
 : "${LLM_PROFILE_REIMPL:=qwen14}"   # for re-implement
 
 # Pipeline knobs
-: "${HUNT_TOPN:=1000}"
+: "${HUNT_TOPN:=10000}"
 : "${HUNT_MIN_SIZE:=0}"
 : "${HUNT_CACHE:=1}"
 : "${HUNT_RESUME:=1}"
@@ -38,7 +59,7 @@ fi
 : "${ENABLE_FLOSS:=1}"
 
 # Exporter knobs (read by ghidra_scripts/simple_export.py inside container)
-: "${GHIDRA_TIMEOUT:=7200}"          # headless wrapper will be allowed up to this many seconds
+: "${GHIDRA_TIMEOUT:=9000}"          # headless wrapper will be allowed up to this many seconds
 : "${EXPORT_FLUSH_EVERY:=500}"       # rewrite valid JSON every N functions
 : "${DECOMPILE_SEC:=12}"             # per-function decompiler budget
 : "${EXPORT_TOPN:=${HUNT_TOPN}}"     # mirror HUNT_TOPN unless explicitly overridden
