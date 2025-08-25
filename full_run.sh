@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# full_run.sh — pre-unpack → ghidra export → analyze(label) with LLM4D → humanize → (opt) reimplement with Qwen
-# Requires: scripts/llm/llmctl.sh, profiles/{llm4d.env,qwen14.env}
+# full_run.sh — pre-unpack → ghidra export → analyze(label w/ LLM4D) → humanize → (opt) reimplement w/ Qwen
+# Requires: scripts/llm/llmctl.sh, profiles/{llm4d.env,qwen14.env}, ghidra_scripts/simple_export.py
 set -Eeuo pipefail
 
 # ---- guard: don't source ----
@@ -11,8 +11,9 @@ fi
 
 # -------------------- config --------------------
 : "${WORK_DIR:=work}"
+
+# Ghidra container & script location
 : "${GHIDRA_IMAGE:=decomp-ghidra-llm:latest}"
-: "${GHIDRA_SCRIPT:=simple_export.py}"
 if [[ -d "ghidra_scripts" ]]; then
   GHIDRA_SCRIPT_DIR="ghidra_scripts"
 elif [[ -d "tools/ghidra_scripts" ]]; then
@@ -20,6 +21,7 @@ elif [[ -d "tools/ghidra_scripts" ]]; then
 else
   GHIDRA_SCRIPT_DIR="ghidra_scripts"
 fi
+: "${GHIDRA_SCRIPT:=simple_export.py}"
 
 # LLM control (single port 8080)
 : "${LLMCTL:=scripts/llm/llmctl.sh}"
@@ -35,22 +37,28 @@ fi
 : "${ENABLE_YARA:=1}"
 : "${ENABLE_FLOSS:=1}"
 
+# Exporter knobs (read by ghidra_scripts/simple_export.py inside container)
+: "${GHIDRA_TIMEOUT:=7200}"          # headless wrapper will be allowed up to this many seconds
+: "${EXPORT_FLUSH_EVERY:=500}"       # rewrite valid JSON every N functions
+: "${DECOMPILE_SEC:=12}"             # per-function decompiler budget
+: "${EXPORT_TOPN:=${HUNT_TOPN}}"     # mirror HUNT_TOPN unless explicitly overridden
+: "${SKIP_PSEUDO:=0}"                # 1 = metadata-only export (no decompile text)
+
 # Re-implement stage
-: "${REIMPL_ENABLE:=1}"             # set 0 to skip
+: "${REIMPL_ENABLE:=1}"              # set 0 to skip reimplementation
 : "${REIMPL_MIN_CONF:=0.78}"
 : "${REIMPL_MAX_FNS:=120}"
 
 # Infra
 : "${HEARTBEAT_SECS:=30}"
-: "${GHIDRA_TIMEOUT:=1800}"
-: "${CLEAN_OLD_LOGS:=1}"
+: "${CLEAN_OLD_LOGS:=1}"             # prune older full_run.*.log files
 
-mkdir -p "$WORK_DIR/logs" "$WORK_DIR/snapshots" "$WORK_DIR/gh_proj"
+mkdir -p "$WORK_DIR/logs" "$WORK_DIR/snapshots" "$WORK_DIR/gh_proj" 2>/dev/null || true
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_LOG="$WORK_DIR/logs/full_run.${STAMP}.log"
 
-# fresh "latest" pointer; prune old logs if desired
+# Start fresh: clear latest pointer and optionally old logs
 rm -f "$WORK_DIR/logs/latest_full_run.log" 2>/dev/null || true
 ln -sfn "$(basename "$RUN_LOG")" "$WORK_DIR/logs/latest_full_run.log"
 if [[ "$CLEAN_OLD_LOGS" == "1" ]]; then
@@ -58,9 +66,10 @@ if [[ "$CLEAN_OLD_LOGS" == "1" ]]; then
     ! -name "$(basename "$RUN_LOG")" -delete 2>/dev/null || true
 fi
 
+# Pretty timestamp pipe
 _fmt(){ while IFS= read -r line; do printf '[%s] %s\n' "$(date +%T)" "$line"; done; }
 
-# ---- heartbeat (auto-clean) ----
+# ---- heartbeat (auto cleaned) ----
 HB_PID=""
 start_hb(){
   (
@@ -85,14 +94,13 @@ trap cleanup EXIT INT TERM
 stage(){ STAGE_NAME="$1"; STAGE_T0="$(date +%s)"; echo "[$(date +%T)] >>> $STAGE_NAME …"; }
 stage_done(){ local t1="$(date +%s)"; printf "[%s] <<< %s done in %ds\n" "$(date +%T)" "$STAGE_NAME" "$((t1-STAGE_T0))"; }
 
-# ---- LLM profile helpers (single port 8080) ----
+# ---- LLM profile helpers (ensures single server on port 8080) ----
 need_llmctl(){ [[ -x "$LLMCTL" ]] || { echo "[full] ERROR: LLM controller not found: $LLMCTL" | _fmt | tee -a "$RUN_LOG"; exit 3; }; }
 use_profile(){
   local prof="$1"
   need_llmctl
-  # switch always (ensures only one server runs, VRAM safe)
   "$LLMCTL" switch "$prof" | _fmt | tee -a "$RUN_LOG"
-  # export env for this stage
+  # Export env for this stage
   eval "$("$LLMCTL" env "$prof")"
   export LLM_ENDPOINT LLM_MODEL
   echo "[full] LLM active: $prof  → $LLM_MODEL @ $LLM_ENDPOINT" | _fmt | tee -a "$RUN_LOG"
@@ -100,7 +108,7 @@ use_profile(){
 
 # ---- header ----
 {
-  echo "================================================"
+  echo "==============================================="
   echo " Decomp full run"
   echo " Timestamp:     ${STAMP}"
   echo " Log:           ${RUN_LOG}"
@@ -110,8 +118,8 @@ use_profile(){
   echo " CAPA/YARA:     ${ENABLE_CAPA}/${ENABLE_YARA}   FLOSS: ${ENABLE_FLOSS}"
   echo " Export script: ${GHIDRA_SCRIPT_DIR}/${GHIDRA_SCRIPT}"
   echo " LLM profiles:  label=${LLM_PROFILE_LABEL}  reimpl=${LLM_PROFILE_REIMPL}"
-  echo " REIMPL:        enabled=${REIMPL_ENABLE}  threshold=${REIMPL_MIN_CONF}  max_fns=${REIMPL_MAX_FNS}"
-  echo "================================================"
+  echo " REIMPL:        threshold=${REIMPL_MIN_CONF}  max_fns=${REIMPL_MAX_FNS}"
+  echo "==============================================="
 } | _fmt | tee -a "$RUN_LOG"
 
 # -------------------- autodiscover input binary --------------------
@@ -132,29 +140,42 @@ python3 tools/pre_unpack.py \
   --out "$WORK_DIR/extracted" \
   --work "$WORK_DIR" 2>&1 | _fmt | tee -a "$RUN_LOG" || true
 
+# Resolve container path for BINARY_PATH and /work/primary_bin.txt
+BIN_CONT=""
 if [[ -f "$WORK_DIR/primary_bin.txt" ]]; then
   host_primary="$(<"$WORK_DIR/primary_bin.txt")"
   case "$host_primary" in
-    "$PWD/$WORK_DIR"/*) rel="${host_primary#"$PWD/$WORK_DIR/"}"; echo "/work/$rel" > "$WORK_DIR/primary_bin.txt" ;;
-    /work/*) : ;;
+    /work/*) BIN_CONT="$host_primary" ;;
+    "$PWD/$WORK_DIR"/*)
+      rel="${host_primary#"$PWD/$WORK_DIR/"}"; BIN_CONT="/work/$rel"
+      echo "$BIN_CONT" > "$WORK_DIR/primary_bin.txt"
+      ;;
+    "$WORK_DIR"/*)
+      rel="${host_primary#"$WORK_DIR/"}"; BIN_CONT="/work/$rel"
+      echo "$BIN_CONT" > "$WORK_DIR/primary_bin.txt"
+      ;;
     *)
-      if [[ "$host_primary" == *"/work/"* ]]; then
-        tail="/${host_primary#*"/work/"}"; echo "/work/${tail#/work/}" > "$WORK_DIR/primary_bin.txt"
-      elif [[ "$HUNT_BIN" == "$PWD/$WORK_DIR/"* ]]; then
-        rel="${HUNT_BIN#"$PWD/$WORK_DIR/"}"; echo "/work/$rel" > "$WORK_DIR/primary_bin.txt"
+      if [[ "$HUNT_BIN" == "$PWD/$WORK_DIR/"* ]]; then
+        rel="${HUNT_BIN#"$PWD/$WORK_DIR/"}"; BIN_CONT="/work/$rel"
+        echo "$BIN_CONT" > "$WORK_DIR/primary_bin.txt"
+      else
+        # fallback: copy file name only under /work
+        BIN_CONT="/work/$(basename "$HUNT_BIN")"
+        echo "$BIN_CONT" > "$WORK_DIR/primary_bin.txt"
       fi
       ;;
   esac
-  echo "[full] using unpacked primary: $(<"$WORK_DIR/primary_bin.txt")" | _fmt | tee -a "$RUN_LOG"
 else
   if [[ "$HUNT_BIN" == "$PWD/$WORK_DIR/"* ]]; then
-    rel="${HUNT_BIN#"$PWD/$WORK_DIR/"}"; echo "/work/$rel" > "$WORK_DIR/primary_bin.txt"
-    echo "[full] primary (no-op unpack): /work/$rel" | _fmt | tee -a "$RUN_LOG"
+    rel="${HUNT_BIN#"$PWD/$WORK_DIR/"}"; BIN_CONT="/work/$rel"
   elif [[ "$HUNT_BIN" == "$WORK_DIR/"* ]]; then
-    rel="${HUNT_BIN#"$WORK_DIR/"}"; echo "/work/$rel" > "$WORK_DIR/primary_bin.txt"
-    echo "[full] primary (no-op unpack): /work/$rel" | _fmt | tee -a "$RUN_LOG"
+    rel="${HUNT_BIN#"$WORK_DIR/"}"; BIN_CONT="/work/$rel"
+  else
+    BIN_CONT="/work/$(basename "$HUNT_BIN")"
   fi
+  echo "$BIN_CONT" > "$WORK_DIR/primary_bin.txt"
 fi
+echo "[full] using unpacked primary: $BIN_CONT" | _fmt | tee -a "$RUN_LOG"
 stop_hb; stage_done
 
 # -------------------- export via docker (Ghidra headless) --------------------
@@ -175,11 +196,16 @@ else
     -e GHIDRA_JAVA_HOME=/opt/java/openjdk \
     -v "$PWD/$WORK_DIR:/work" \
     -v "$PWD/$GHIDRA_SCRIPT_DIR:/scripts" \
+    -e BINARY_PATH="$BIN_CONT" \
     -e OUT_JSON="$OUT_CONT" \
     -e GHIDRA_PROJECT_DIR="/tmp/gh_proj" \
     -e GHIDRA_PROJECT_NAME="myproj" \
     -e GHIDRA_TIMEOUT="$GHIDRA_TIMEOUT" \
     -e HOST_WORK_DIR="$PWD/$WORK_DIR" \
+    -e EXPORT_FLUSH_EVERY="$EXPORT_FLUSH_EVERY" \
+    -e EXPORT_TOPN="$EXPORT_TOPN" \
+    -e DECOMPILE_SEC="$DECOMPILE_SEC" \
+    -e SKIP_PSEUDO="$SKIP_PSEUDO" \
     "$GHIDRA_IMAGE" 2>&1 | _fmt | tee -a "$RUN_LOG"
   stop_hb; stage_done
 
@@ -193,7 +219,6 @@ fi
 stage "analyze(label) with profile: ${LLM_PROFILE_LABEL}"; start_hb
 use_profile "$LLM_PROFILE_LABEL"
 export HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS
-# Call the analyzer directly so we can change model later before humanize
 stdbuf -oL -eL python3 tools/function_hunt/run_autodiscover.py 2>&1 | _fmt | tee -a "$RUN_LOG"
 stop_hb; stage_done
 
@@ -222,7 +247,6 @@ if [[ "$REIMPL_ENABLE" == "1" ]]; then
   if [[ -x "./reimplement.sh" ]]; then
     stdbuf -oL -eL ./reimplement.sh 2>&1 | _fmt | tee -a "$RUN_LOG"
   else
-    # Call python directly if no wrapper
     stdbuf -oL -eL python3 tools/reimplement.py \
       --src-dir "$OUT_DIR" \
       --mapping "$JSONL" \

@@ -1,177 +1,241 @@
-# -*- coding: utf-8 -*-
-#@category Export
-# simple_export.py - dump basic facts for function_hunt (Jython 2.x / Ghidra headless)
-# Usage (headless -postScript):
-#   -postScript simple_export.py /work/snapshots/<base>_out.json
+#@category Decomp/Export
+# Headless exporter: dump function metadata + (bounded) decompiler text with checkpoints & resume.
 #
-# Output JSON schema:
-# {
-#   "binary": "<path>",
-#   "arch": "<lang-id>",
-#   "imageBase": "0x...",
-#   "generated_at": <unix>,
-#   "functions": [
-#     { "name": "...", "addr": "0x...", "size": 123, "decomp": "...", "asm": "..." }
-#   ]
-# }
+# Env knobs (read via os.environ):
+#   EXPORT_FLUSH_EVERY   : how often to rewrite OUT_JSON (valid JSON), default 500
+#   EXPORT_TOPN          : limit to top-N functions by body size (0 = all), default 0
+#   EXPORT_MAX_SECONDS   : soft overall budget (0 = no limit), default 0  (we still obey external wrapper timeout)
+#   DECOMPILE_SEC        : per-function decompile timeout seconds, default 12
+#   SKIP_PSEUDO          : "1" to skip decompile text (metadata-only), default "0"
+#
+# Args from AnalyzeHeadless:
+#   <OUT_JSON_PATH>
+#
+# Sidecar for resume:
+#   <OUT_JSON_PATH>.addrs.txt   # list of addresses exported (one per line)
+#
+# Progress lines:
+#   "[export] progress <count> functions..."
+#
+# This script is Jython and uses Ghidra APIs.
 
-import sys, os, json, time, traceback
-from ghidra.app.decompiler import DecompInterface
+import os, sys, time, json, hashlib
+from java.lang import System
+from ghidra.app.decompiler import DecompInterface, DecompileOptions
 from ghidra.util.task import ConsoleTaskMonitor
+from ghidra.program.model.listing import Function
+from ghidra.program.flatapi import FlatProgramAPI
 
-# ---- helpers (Python 2 compatible) ----
-def eprint(msg):
-    try:
-        sys.stderr.write(str(msg) + "\n")
-    except:
-        try:
-            print >> sys.stderr, msg
-        except:
-            pass
+# -------- util --------
+def getenv(k, default=None):
+    v = os.environ.get(k)
+    if v is None:
+        v = System.getenv(k)  # in case only Java env is set
+    return default if v is None else v
 
-def jhex(addr):
+def to_int(s, dv):
+    try: return int(str(s).strip())
+    except: return dv
+
+def now_ts():
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+def addr_str(fn):
     try:
-        return "0x%s" % addr.toString()
+        return fn.getEntryPoint().toString()
     except:
         return "0x0"
 
-def ensure_parent(path):
-    d = os.path.dirname(path)
-    if d and not os.path.isdir(d):
-        try:
-            os.makedirs(d)
-        except:
-            pass
-
-def get_args_or_die():
-    args = getScriptArgs()
-    if args is None or len(args) < 1 or not args[0]:
-        eprint("[export] ERROR: need output JSON path")
-        raise RuntimeError("missing OUT_JSON arg")
-    return args
-
-def decompile_func(ifc, fn, timeout_ms, monitor):
-    res = ifc.decompileFunction(fn, timeout_ms, monitor)
-    if res is None or not res.getDecompiledFunction():
-        return None
-    return res.getDecompiledFunction().getC()
-
-def asm_snippet(fn, max_ins):
+def fn_size(fn):
     try:
-        listing = currentProgram.getListing()
-        it = listing.getInstructions(fn.getBody(), True)
-        lines, count = [], 0
-        while it.hasNext() and count < max_ins:
-            ins = it.next()
-            mn = ins.getMnemonicString()
-            ops = []
-            oi = 0
-            while oi < ins.getNumOperands():
-                try:
-                    ops.append(ins.getDefaultOperandRepresentation(oi))
-                except:
-                    ops.append("?")
-                oi += 1
-            lines.append("%s: %s %s" % (ins.getAddress().toString(), mn, ", ".join(ops) if ops else ""))
-            count += 1
-        return "\n".join(lines)
+        return fn.getBody().getNumAddresses()
     except:
-        return ""
+        return 0
 
-def body_size_approx(fn):
+def read_sidecar(side_path):
+    done = set()
     try:
-        return int(fn.getBody().getNumAddresses())
+        f = open(side_path, "r")
+        for ln in f:
+            ln = ln.strip()
+            if ln:
+                done.add(ln)
+        f.close()
     except:
-        try:
-            mn = fn.getBody().getMinAddress()
-            mx = fn.getBody().getMaxAddress()
-            if mn and mx:
-                return int(mx.subtract(mn)) + 1
-        except:
-            pass
-    return 0
+        pass
+    return done
 
+def append_sidecar(side_path, addrs):
+    if not addrs: return
+    f = open(side_path, "a")
+    for a in addrs: f.write(a + "\n")
+    f.close()
+
+def write_json_safe(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(obj, fh, indent=2)
+    # atomic-ish
+    try:
+        os.replace(tmp, path)
+    except:
+        os.rename(tmp, path)
+
+# -------- main --------
 def main():
-    t0 = time.time()
-    args = get_args_or_die()
-    out_path = args[0]
+    out_json = None
+    if len(sys.argv) >= 2:
+        out_json = sys.argv[1]
+    if not out_json:
+        out_json = getenv("OUT_JSON", "/work/snapshots/out.json")
+    out_json = str(out_json)
 
-    prog = currentProgram
-    lang = prog.getLanguageID().getIdAsString()
-    image_base = prog.getImageBase()
+    flush_every   = to_int(getenv("EXPORT_FLUSH_EVERY", "500"), 500)
+    topn          = to_int(getenv("EXPORT_TOPN", "0"), 0)
+    max_seconds   = to_int(getenv("EXPORT_MAX_SECONDS", "0"), 0)
+    decomp_sec    = to_int(getenv("DECOMPILE_SEC", "12"), 12)
+    skip_pseudo   = str(getenv("SKIP_PSEUDO", "0")).strip() in ("1","true","yes","on")
 
-    ifc = DecompInterface()
-    ifc.openProgram(prog)
+    sidecar = out_json + ".addrs.txt"
+    t_start = time.time()
+
     monitor = ConsoleTaskMonitor()
 
-    MAX_DECOMP_LINES = 80
-    MAX_DECOMP_CHARS = 12000
-    MAX_ASM_INSNS = 100
+    prog = currentProgram
+    api  = FlatProgramAPI(prog)
 
-    fm = prog.getFunctionManager()
-    funcs = fm.getFunctions(True)
+    # Build function list
+    fn_mgr = prog.getFunctionManager()
+    it = fn_mgr.getFunctions(True)  # forward
+    fns = []
+    while it.hasNext() and not monitor.isCancelled():
+        fns.append(it.next())
 
-    out = {
-        "binary": prog.getExecutablePath() or (prog.getDomainFile().getPathname() if prog.getDomainFile() else ""),
-        "arch": lang,
-        "imageBase": jhex(image_base),
-        "generated_at": int(time.time()),
-        "functions": []
+    # sort by body size desc for best ROI if topn > 0
+    fns.sort(key=lambda f: fn_size(f), reverse=True)
+    if topn > 0 and topn < len(fns):
+        fns = fns[:topn]
+
+    # Resume: read sidecar for already-exported addresses
+    done_addrs = read_sidecar(sidecar)
+
+    # Decompiler setup
+    ifc = None
+    if not skip_pseudo:
+        ifc = DecompInterface()
+        opts = DecompileOptions()
+        try:
+            # per-function timeout (seconds)
+            opts.setTimeout(decomp_sec)
+        except:
+            pass
+        ifc.setOptions(opts)
+        if not ifc.openProgram(prog):
+            # if fails, fall back to metadata-only
+            ifc = None
+            skip_pseudo = True
+
+    # Program meta
+    md5 = ""
+    try:
+        cm = prog.getMemory()
+        bf = cm.getAllInitializedAddressSet().getNumAddresses()
+        md5 = str(prog.getExecutableMD5()) if prog.getExecutableMD5() else ""
+    except:
+        pass
+
+    meta = {
+        "program_name": prog.getName(),
+        "lang": str(prog.getLanguage().getLanguageID()),
+        "compiler": str(prog.getCompilerSpec().getCompilerSpecID()),
+        "image_base": str(prog.getImageBase()),
+        "md5": md5,
+        "export_ts": now_ts(),
+        "flush_every": flush_every,
+        "topn": topn,
+        "decompile_sec": decomp_sec,
+        "skip_pseudo": skip_pseudo,
     }
 
+    exported = []
+    exported_addrs_batch = []
+    total = len(fns)
     count = 0
-    while funcs.hasNext():
-        fn = funcs.next()
-        try:
-            name = fn.getName()
-            addr = fn.getEntryPoint()
-            size = body_size_approx(fn)
 
-            dec = ""
+    def flush():
+        if not exported:
+            # if resuming and nothing new yet, but maybe an old file exists
+            if os.path.isfile(out_json):
+                return
+        obj = {
+            "meta": meta,
+            "functions": exported
+        }
+        write_json_safe(out_json, obj)
+
+    for fn in fns:
+        if monitor.isCancelled():
+            break
+
+        a = addr_str(fn)
+        if a in done_addrs:
+            continue
+
+        # time budget?
+        if max_seconds > 0 and (time.time() - t_start) >= max_seconds:
+            break
+
+        # collect minimal metadata
+        rec = {
+            "name": fn.getName(),
+            "addr": a,
+            "size": fn_size(fn)
+        }
+
+        # decompile (optional, with bounded time)
+        if not skip_pseudo and ifc is not None:
             try:
-                dectxt = decompile_func(ifc, fn, 30 * 1000, monitor)
-                if dectxt:
-                    lines = dectxt.splitlines()
-                    if len(lines) > MAX_DECOMP_LINES:
-                        lines = lines[:MAX_DECOMP_LINES] + ["/* ...snip... */"]
-                    dec = "\n".join(lines)
-                    if len(dec) > MAX_DECOMP_CHARS:
-                        dec = dec[:MAX_DECOMP_CHARS] + "\n/* ...snip... */"
+                res = ifc.decompileFunction(fn, decomp_sec, monitor)
+                if res and res.getDecompiledFunction():
+                    code = res.getDecompiledFunction().getC()
+                    # trim very long blocks to keep JSON manageable
+                    if code is not None and len(code) > 20000:
+                        code = code[:20000] + "\n/* ...truncated... */\n"
+                    rec["decomp"] = code
+                else:
+                    rec["decomp"] = None
             except:
-                pass
+                rec["decomp"] = None
+        else:
+            rec["decomp"] = None
 
-            asm = asm_snippet(fn, MAX_ASM_INSNS)
+        exported.append(rec)
+        exported_addrs_batch.append(a)
+        count += 1
 
-            out["functions"].append({
-                "name": name,
-                "addr": jhex(addr),
-                "size": int(size),
-                "decomp": dec,
-                "asm": asm
-            })
-            count += 1
-            if count % 500 == 0:
-                print("[export] progress %d functions..." % count)
-        except:
-            eprint("[export] WARN: failed on function %s" % (fn.getName(),))
-            eprint(traceback.format_exc())
+        if (count % 500) == 0:
+            print("[export] progress %d functions..." % count)
+            flush()
+            append_sidecar(sidecar, exported_addrs_batch)
+            exported_addrs_batch = []
 
-    ensure_parent(out_path)
-    try:
-        with open(out_path, "w") as fh:
-            json.dump(out, fh)
-        print("[export] wrote %s (%d functions) in %.1fs" % (out_path, len(out["functions"]), time.time()-t0))
-    except:
-        eprint("[export] ERROR: failed to write %s" % out_path)
-        eprint(traceback.format_exc())
-        raise
+        # obey external timeout wrapper if present
+        # (no direct signal visibility here; rely on wrapper to kill us)
+
+    # final flush
+    flush()
+    append_sidecar(sidecar, exported_addrs_batch)
+    print("[export] done, total exported: %d" % count)
 
 if __name__ == "__main__":
     try:
         main()
     except SystemExit:
         raise
-    except:
-        eprint(traceback.format_exc())
-        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print("[export] ERROR:", e)
+        sys.exit(1)
 
