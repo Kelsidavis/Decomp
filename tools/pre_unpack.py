@@ -156,6 +156,13 @@ def main() -> int:
     elif sig.get("cab_sfx"):
         print("[pre] CAB SFX likely → extracting via cabextract")
         extracted += extract_cab(exe, out)
+    
+    # Extract PE resources even for regular executables (not just archives)
+    if is_pe(exe) and not any(sig.get(k) for k in ["zip_sfx", "seven_sfx", "rar_sfx", "cab_sfx"]):
+        print("[pre] Regular PE detected → extracting resources via 7z")
+        pe_resources = extract_with_7z(exe, out)
+        if pe_resources:
+            extracted += pe_resources
 
     # UPX unpack (even if also SFX)
     upx_out = None
