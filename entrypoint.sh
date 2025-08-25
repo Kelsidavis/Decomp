@@ -6,13 +6,17 @@ set -Eeuo pipefail
 : "${OUT_JSON:=}"                             # default computed from chosen binary
 : "${GHIDRA_SCRIPT:=simple_export.py}"
 : "${GHIDRA_SCRIPT_DIR:=/scripts}"
-: "${GHIDRA_PROJECT_DIR:=/work/gh_proj}"
+: "${GHIDRA_PROJECT_DIR:=/tmp/gh_proj}"       # ephemeral to avoid host perms
 : "${GHIDRA_PROJECT_NAME:=autoproj}"
 : "${GHIDRA_TIMEOUT:=1800}"
 : "${GHIDRA_MAXMEM:=4G}"
 : "${HOST_WORK_DIR:=}"                        # optional hint to map host abs path → /work
+: "${HOME:=/tmp/gh_user}"
+: "${XDG_CONFIG_HOME:=$HOME/.config}"
 
-export GHIDRA_MAXMEM
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" || true
+export GHIDRA_MAXMEM HOME XDG_CONFIG_HOME
+
 log(){ printf '[%s] %s\n' "$(date +%T)" "$*" >&2; }
 
 # --- choose binary: prefer /work/primary_bin.txt if present ---
@@ -23,21 +27,16 @@ fi
 # Map obvious host abs paths → /work/… if needed
 rebase_to_work() {
   local p="$1"
-  # Already container path?
   [[ "$p" == /work/* ]] && { echo "$p"; return; }
-  # If we were given host work hint, map it
   if [[ -n "$HOST_WORK_DIR" && "$p" == "$HOST_WORK_DIR"/* ]]; then
     echo "/work/${p#"$HOST_WORK_DIR/"}"; return
   fi
-  # Try to detect "…/work/…" segment inside p
   if [[ "$p" == *"/work/"* ]]; then
     local tail="/${p#*"/work/"}"
     echo "/work/${tail#/work/}"; return
   fi
-  # Nothing we can do
   echo "$p"
 }
-
 if [[ -n "$BINARY_PATH" && ! -e "$BINARY_PATH" ]]; then
   BINARY_PATH="$(rebase_to_work "$BINARY_PATH")"
 fi
@@ -51,19 +50,13 @@ if [[ -z "$BINARY_PATH" || ! -f "$BINARY_PATH" ]]; then
     log "INFO: auto-selected candidate: $BINARY_PATH"
   fi
 fi
-
 if [[ -z "$BINARY_PATH" || ! -f "$BINARY_PATH" ]]; then
   log "ERROR: BINARY_PATH not set and /work/primary_bin.txt missing or invalid."
   exit 2
 fi
 
-# --- PE sanity check (no python): check 'MZ' at start ---
-is_pe() {
-  local f="$1"
-  local sig
-  sig="$(od -An -t x1 -N2 "$f" 2>/dev/null | tr -d ' \n')"
-  [[ "$sig" == "4d5a" || "$sig" == "4D5A" ]]
-}
+# --- PE sanity: check 'MZ' signature (no Python) ---
+is_pe() { local f="$1"; local sig; sig="$(od -An -t x1 -N2 "$f" 2>/dev/null | tr -d ' \n')"; [[ "$sig" == "4d5a" || "$sig" == "4D5A" ]]; }
 if ! is_pe "$BINARY_PATH"; then
   log "ERROR: selected binary does not look like a PE (no MZ): $BINARY_PATH"
   exit 2
@@ -94,12 +87,13 @@ fi
 mkdir -p "$(dirname "${OUT_JSON}")" "${GHIDRA_PROJECT_DIR}"
 
 log "Ghidra:   ${GHIDRA_HOME}"
-log "Java:     ${JAVA_HOME:-<unset>} (GHIDRA_JAVA_HOME=${GHIDRA_JAVA_HOME:-<unset>})"
+log "Java:     JAVA_HOME=${JAVA_HOME:-<unset>}  GHIDRA_JAVA_HOME=${GHIDRA_JAVA_HOME:-<unset>}"
 log "Binary:   ${BINARY_PATH}"
 log "Exporter: ${GHIDRA_SCRIPT_DIR}/${GHIDRA_SCRIPT}"
 log "Output:   ${OUT_JSON}"
 log "Project:  ${GHIDRA_PROJECT_DIR} : ${GHIDRA_PROJECT_NAME}"
 log "Timeout:  ${GHIDRA_TIMEOUT}s | MaxMem: ${GHIDRA_MAXMEM}"
+log "HOME:     ${HOME}  XDG_CONFIG_HOME: ${XDG_CONFIG_HOME}"
 
 set +e
 timeout "${GHIDRA_TIMEOUT}" "${GHIDRA_HOME}/support/analyzeHeadless" \

@@ -143,15 +143,20 @@ else
   stage "export (docker)"
   start_hb
   # Use entrypoint-based exporter; it will read /work/primary_bin.txt
-  docker run --rm \
-    -v "$PWD/$WORK_DIR:/work" \
-    -v "$PWD/$GHIDRA_SCRIPT_DIR:/scripts" \
-    -e OUT_JSON="$OUT_CONT" \
-    -e GHIDRA_PROJECT_DIR="/work/gh_proj" \
-    -e GHIDRA_PROJECT_NAME="myproj" \
-    -e GHIDRA_TIMEOUT="$GHIDRA_TIMEOUT" \
-    -e HOST_WORK_DIR="$PWD/$WORK_DIR" \
-    "$GHIDRA_IMAGE" 2>&1 | _fmt | tee -a "$RUN_LOG"
+    docker run --rm \
+      --user "$(id -u):$(id -g)" \
+      -e HOME=/tmp/gh_user \
+      -e XDG_CONFIG_HOME=/tmp/gh_user/.config \
+      -e JAVA_HOME=/opt/java/openjdk \
+      -e GHIDRA_JAVA_HOME=/opt/java/openjdk \
+      -v "$PWD/$WORK_DIR:/work" \
+      -v "$PWD/$GHIDRA_SCRIPT_DIR:/scripts" \
+      -e OUT_JSON="$OUT_CONT" \
+      -e GHIDRA_PROJECT_DIR="/tmp/gh_proj" \
+      -e GHIDRA_PROJECT_NAME="myproj" \
+      -e GHIDRA_TIMEOUT="$GHIDRA_TIMEOUT" \
+      -e HOST_WORK_DIR="$PWD/$WORK_DIR" \
+      "$GHIDRA_IMAGE" 2>&1 | _fmt | tee -a "$RUN_LOG"
   stop_hb
   stage_done
 
