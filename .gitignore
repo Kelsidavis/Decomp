@@ -11,4 +11,5 @@ tools/function_hunt/__pycache__/
 
 # Docker build artifacts
 work/
+rules/
 

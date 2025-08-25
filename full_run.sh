@@ -27,7 +27,6 @@ _on_exit() {
 trap _on_error ERR
 trap _on_exit  EXIT
 
-
 # ---- Rules directories (project-root/rules) ----
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
@@ -37,17 +36,34 @@ RULES_DIR="${RULES_DIR:-$PROJECT_ROOT/rules}"
 : "${YARA_RULES_DIR:=$RULES_DIR/yara}"
 export CAPA_RULES YARA_RULES_DIR
 
+# Ensure our wrappers (e.g., bin/capa) are found first
+export PATH="$PROJECT_ROOT/bin:$PATH"
+
 echo "[full_run] CAPA_RULES=${CAPA_RULES}"
 echo "[full_run] YARA_RULES_DIR=${YARA_RULES_DIR}"
+
 : "${BOOTSTRAP_RULES:=0}"   # set to 1 to auto-clone rules on first run
 if [[ "$BOOTSTRAP_RULES" == "1" ]]; then
   [[ -d "$CAPA_RULES/.git" ]] || { mkdir -p "$CAPA_RULES"; git clone --depth=1 https://github.com/mandiant/capa-rules "$CAPA_RULES"; }
   [[ -d "$YARA_RULES_DIR/.git" ]] || { mkdir -p "$YARA_RULES_DIR"; git clone --depth=1 https://github.com/Yara-Rules/rules "$YARA_RULES_DIR"; }
 fi
 
+# Gracefully disable CAPA/YARA when rules are missing
+: "${ENABLE_CAPA:=1}"
+: "${ENABLE_YARA:=1}"
+if [[ "$ENABLE_CAPA" == "1" && ! -d "$CAPA_RULES" ]]; then
+  echo "[full_run] WARN: CAPA_RULES not found at '$CAPA_RULES' → disabling CAPA." | tee -a "$RUN_LOG"
+  ENABLE_CAPA=0
+fi
+if [[ "$ENABLE_YARA" == "1" && ! -d "$YARA_RULES_DIR" ]]; then
+  echo "[full_run] WARN: YARA_RULES_DIR not found at '$YARA_RULES_DIR' → disabling YARA." | tee -a "$RUN_LOG"
+  ENABLE_YARA=0
+fi
+
 # ---- FLOSS timeout (seconds) ----
-: "${FLOSS_TIMEOUT:=700}"
+: "${FLOSS_TIMEOUT:=600}"
 export FLOSS_TIMEOUT
+echo "[full_run] FLOSS_TIMEOUT=${FLOSS_TIMEOUT}s"
 
 # ---- guard: don't source ----
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
@@ -57,6 +73,10 @@ fi
 
 # -------------------- config --------------------
 : "${WORK_DIR:=work}"
+
+# LLM readiness grace for llmctl (tiny sleep after spawn)
+: "${LLM_GRACE:=1.2}"
+export LLM_GRACE
 
 # Ghidra container & script location
 : "${GHIDRA_IMAGE:=decomp-ghidra-llm:latest}"
@@ -79,8 +99,6 @@ fi
 : "${HUNT_MIN_SIZE:=0}"
 : "${HUNT_CACHE:=1}"
 : "${HUNT_RESUME:=1}"
-: "${ENABLE_CAPA:=1}"
-: "${ENABLE_YARA:=1}"
 : "${ENABLE_FLOSS:=1}"
 
 # Exporter knobs (read by ghidra_scripts/simple_export.py inside container)
@@ -240,6 +258,7 @@ else
     -e XDG_CONFIG_HOME=/tmp/gh_user/.config \
     -e JAVA_HOME=/opt/java/openjdk \
     -e GHIDRA_JAVA_HOME=/opt/java/openjdk \
+    -e GHIDRA_OVERRIDE_JAVA=1 \
     -v "$PWD/$WORK_DIR:/work" \
     -v "$PWD/$GHIDRA_SCRIPT_DIR:/scripts" \
     -e BINARY_PATH="$BIN_CONT" \
@@ -268,7 +287,7 @@ export HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA EN
 stdbuf -oL -eL python3 tools/function_hunt/run_autodiscover.py 2>&1 | _fmt | tee -a "$RUN_LOG"
 stop_hb; stage_done
 
-JSONL="work/hunt/functions.labeled.jsonl"
+JSONL="$WORK_DIR/hunt/functions.labeled.jsonl"
 if [[ ! -s "$JSONL" ]]; then
   echo "[full] ERROR: expected mapping not found: $JSONL" | _fmt | tee -a "$RUN_LOG"
   exit 4
@@ -276,8 +295,8 @@ fi
 
 # -------------------- humanize (no LLM) --------------------
 stage "humanize (AST-safe rename)"; start_hb
-SRC_DIR="work/recovered_project/src"
-OUT_DIR="work/recovered_project_human"
+SRC_DIR="$WORK_DIR/recovered_project/src"
+OUT_DIR="$WORK_DIR/recovered_project_human"
 mkdir -p "$(dirname "$OUT_DIR")"
 stdbuf -oL -eL python3 tools/humanize_source.py \
   --src-dir "$SRC_DIR" \
