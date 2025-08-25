@@ -27,15 +27,13 @@ USER_BIN=""
 usage() {
   cat <<EOF
 Usage: $0 [options]
-
-Options:
   --no-preflight           Skip preflight checks
   --reset-run              Clear previous mapping/progress before run
   --bin <path>             Use this binary explicitly (skips autodiscovery)
-  --topn <N>               Override HUNT_TOPN        (default: $HUNT_TOPN)
-  --min-size <N>           Override HUNT_MIN_SIZE    (default: $HUNT_MIN_SIZE)
-  --threshold <float>      Override REIMPL_THRESHOLD (default: $REIMPL_THRESHOLD)
-  --max-fns <N>            Override REIMPL_MAX_FNS   (default: $REIMPL_MAX_FNS)
+  --topn <N>               Override HUNT_TOPN
+  --min-size <N>           Override HUNT_MIN_SIZE
+  --threshold <float>      Override REIMPL_THRESHOLD
+  --max-fns <N>            Override REIMPL_MAX_FNS
   -h|--help                Show this help
 EOF
 }
@@ -62,6 +60,10 @@ cd "$SCRIPT_DIR"
 mkdir -p "$WORK_DIR/logs"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_LOG="$WORK_DIR/logs/full_run.${STAMP}.log"
+
+# Make sure children inherit these (fixes preflight LLM warning)
+export WORK_DIR LLM_ENDPOINT LLM_MODEL HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS
+export REIMPL_THRESHOLD REIMPL_MAX_FNS
 
 # tee everything to the log
 exec > >(stdbuf -oL -eL tee -a "$RUN_LOG") 2>&1
@@ -96,39 +98,20 @@ if (( RESET_RUN )); then
   echo "[reset] cleared mapping/progress files"
 fi
 
-# propagate env to children
-export WORK_DIR LLM_ENDPOINT LLM_MODEL HUNT_TOPN HUNT_MIN_SIZE HUNT_CACHE HUNT_RESUME ENABLE_CAPA ENABLE_YARA ENABLE_FLOSS
-export REIMPL_THRESHOLD REIMPL_MAX_FNS
-
 # --------------- Autodiscover binary (work/ root only) ---------------
 discover_bin() {
   local root="$WORK_DIR"
   local cand=""
 
-  # 0) from --bin
-  if [[ -n "$USER_BIN" && -f "$USER_BIN" ]]; then
-    printf '%s\n' "$USER_BIN"; return 0
-  fi
-  # 1) env HUNT_BIN
-  if [[ -n "${HUNT_BIN:-}" && -f "$HUNT_BIN" ]]; then
-    printf '%s\n' "$HUNT_BIN"; return 0
-  fi
-  # 2) previous choice
-  if [[ -f "$root/primary_bin.txt" ]]; then
-    cand="$(<"$root/primary_bin.txt")"
-    if [[ -f "$cand" ]]; then
-      printf '%s\n' "$cand"; return 0
-    fi
-  fi
-  # 3) scan work/ root for PE and pick largest
+  if [[ -n "$USER_BIN" && -f "$USER_BIN" ]]; then printf '%s\n' "$USER_BIN"; return 0; fi
+  if [[ -n "${HUNT_BIN:-}" && -f "$HUNT_BIN" ]]; then printf '%s\n' "$HUNT_BIN"; return 0; fi
+  if [[ -f "$root/primary_bin.txt" ]]; then cand="$(<"$root/primary_bin.txt")"; [[ -f "$cand" ]] && { printf '%s\n' "$cand"; return 0; }; fi
+
   local best="" best_size=0
   shopt -s nullglob
   for f in "$root"/*; do
     [[ -f "$f" ]] || continue
-    case "${f,,}" in
-      *.exe|*.dll|*.bin) : ;;
-      *) continue ;;
-    esac
+    case "${f,,}" in *.exe|*.dll|*.bin) ;; *) continue ;; esac
     if python3 - "$f" <<'PY'
 import sys
 p=sys.argv[1]
@@ -162,7 +145,7 @@ fi
 export HUNT_BIN="$BIN"
 echo "[full] autodiscovered binary: $HUNT_BIN"
 
-# --------------- Pre-unpack SFX/packed → choose primary payload ---------------
+# Pre-unpack SFX/packed → choose primary payload
 if command -v python3 >/dev/null 2>&1; then
   python3 tools/pre_unpack.py --bin "$HUNT_BIN" --out "$WORK_DIR/extracted" --work "$WORK_DIR" || true
   if [[ -f "$WORK_DIR/primary_bin.txt" ]]; then
@@ -178,11 +161,11 @@ if [[ ! -f "$HUNT_BIN" ]]; then
   exit 3
 fi
 
-# --------------- Analyze + Humanize ---------------
+# Analyze + Humanize
 echo "[full] starting analyze + humanize…"
 ./humanize.sh || { echo "[full] humanize pipeline failed"; exit 4; }
 
-# --------------- Re-implement (always) ---------------
+# Re-implement (always)
 JSONL="$WORK_DIR/hunt/functions.labeled.jsonl"
 SRC_HUMAN="$WORK_DIR/recovered_project_human/src"
 OUT_REIMPL="$WORK_DIR/recovered_project_reimpl"
