@@ -7,6 +7,9 @@ set -Eeuo pipefail
 : "${RUN_LOG:=work/logs/full_run.$(date +%Y%m%d-%H%M%S).log}"
 mkdir -p "$(dirname "$RUN_LOG")"
 
+# Pretty timestamp pipe
+_fmt(){ while IFS= read -r line; do printf '[%s] %s\n' "$(date +%T)" "$line"; done; }
+
 # Set to 0 to disable the pause (or export PAUSE_ON_EXIT=0)
 : "${PAUSE_ON_EXIT:=1}"
 
@@ -35,12 +38,19 @@ RULES_DIR="${RULES_DIR:-$PROJECT_ROOT/rules}"
 : "${CAPA_RULES:=$RULES_DIR/capa}"
 : "${YARA_RULES_DIR:=$RULES_DIR/yara}"
 export CAPA_RULES YARA_RULES_DIR
-export CAPA_DATADIR="$CAPA_RULES"
-echo "[full_run] CAPA_DATADIR=${CAPA_DATADIR}"
 
-# Ensure our wrappers (e.g., bin/capa) are found first
+# Force python -m capa to see our rules
+export CAPA_DATADIR="$CAPA_RULES"
+
+# Make sure our wrappers win
 export PATH="$PROJECT_ROOT/bin:$PATH"
 
+{
+  echo "[diag] PATH prefix: $PROJECT_ROOT/bin"
+  echo "[diag] capa -> $(command -v capa)"
+  echo "[diag] yara -> $(command -v yara)"
+  echo "[diag] CAPA_RULES=$CAPA_RULES  CAPA_DATADIR=$CAPA_DATADIR  YARA_RULES_DIR=$YARA_RULES_DIR"
+} | _fmt | tee -a "$RUN_LOG"
 echo "[full_run] CAPA_RULES=${CAPA_RULES}"
 echo "[full_run] YARA_RULES_DIR=${YARA_RULES_DIR}"
 
@@ -62,10 +72,15 @@ if [[ "$ENABLE_YARA" == "1" && ! -d "$YARA_RULES_DIR" ]]; then
   ENABLE_YARA=0
 fi
 
-# ---- FLOSS timeout (seconds) ----
-: "${FLOSS_TIMEOUT:=600}"
+ # ---- FLOSS timeout (seconds) ----
+
+: "${FLOSS_TIMEOUT:=10}"
 export FLOSS_TIMEOUT
+# run_autodiscover.py reads HUNT_FLOSS_TIMEOUT, so mirror it here
+: "${HUNT_FLOSS_TIMEOUT:=${FLOSS_TIMEOUT}}"
+export HUNT_FLOSS_TIMEOUT
 echo "[full_run] FLOSS_TIMEOUT=${FLOSS_TIMEOUT}s"
+echo "[full_run] HUNT_FLOSS_TIMEOUT=${HUNT_FLOSS_TIMEOUT}s"
 
 # ---- guard: don't source ----
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
@@ -131,9 +146,6 @@ if [[ "$CLEAN_OLD_LOGS" == "1" ]]; then
   find "$WORK_DIR/logs" -maxdepth 1 -type f -name 'full_run.*.log' \
     ! -name "$(basename "$RUN_LOG")" -delete 2>/dev/null || true
 fi
-
-# Pretty timestamp pipe
-_fmt(){ while IFS= read -r line; do printf '[%s] %s\n' "$(date +%T)" "$line"; done; }
 
 # ---- heartbeat (auto cleaned) ----
 HB_PID=""
@@ -281,9 +293,6 @@ else
     exit 3
   fi
 fi
-
-echo "[diag] capa -> $(command -v capa)"
-echo "[diag] yara -> $(command -v yara)"
 
 # -------------------- analyze (label) with LLM4Decompile --------------------
 stage "analyze(label) with profile: ${LLM_PROFILE_LABEL}"; start_hb
