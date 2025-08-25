@@ -24,7 +24,8 @@ def detect_msvc_mangling(symbol: str) -> bool:
     # MSVC C++ mangling patterns
     if symbol.startswith('?'):  # MSVC C++ symbol prefix
         return True
-    if '@' in symbol and not symbol.startswith('_'):  # MSVC decorated names
+    # Exclude stdcall decorations like @32, @20 which are C decorations, not C++ mangling
+    if '@' in symbol and not symbol.startswith('_') and not re.match(r'.*@\d+$', symbol):
         return True
     return False
 
@@ -183,11 +184,13 @@ def detect_language_from_export(export_path: Path) -> Tuple[str, Dict]:
     return language, analysis
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <ghidra_export.json>")
+    if len(sys.argv) < 2:
+        print(f"Usage: {sys.argv[0]} <ghidra_export.json> [--debug]")
         sys.exit(1)
         
     export_path = Path(sys.argv[1])
+    debug = '--debug' in sys.argv
+    
     if not export_path.exists():
         print(f"Error: Export file not found: {export_path}")
         sys.exit(1)
@@ -203,6 +206,27 @@ def main():
         for key, value in sorted(analysis.items()):
             if key not in ['reason', 'confidence']:
                 print(f"  {key}: {value}")
+                
+        # Debug mode: show actual mangled symbols found
+        if debug and analysis.get('mangled_symbols', 0) > 0:
+            print()
+            print("Debug: Found mangled symbols:")
+            with open(export_path, 'r') as f:
+                data = json.load(f)
+            functions = data.get('functions', [])
+            sample_size = min(1000, len(functions))
+            
+            count = 0
+            for func in functions[:sample_size]:
+                name = func.get('name', '')
+                if detect_cpp_mangling(name) or detect_msvc_mangling(name):
+                    print(f"  {name}")
+                    count += 1
+                    if count >= 10:  # Limit output
+                        remaining = analysis.get('mangled_symbols', 0) - count
+                        if remaining > 0:
+                            print(f"  ... and {remaining} more")
+                        break
                 
     except Exception as e:
         print(f"Error analyzing export: {e}")
