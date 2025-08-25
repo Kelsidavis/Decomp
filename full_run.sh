@@ -345,10 +345,10 @@ DETECTED_LANG="c"  # default
 if [[ -s "$OUT_HOST" && -f "tools/detect_language.py" ]]; then
   echo "[full] detecting programming language..." | _fmt | tee -a "$RUN_LOG"
   LANG_RESULT=$(python3 tools/detect_language.py "$OUT_HOST" 2>/dev/null) || true
-  if [[ "$LANG_RESULT" =~ "Detected language: CPP" ]]; then
+  if echo "$LANG_RESULT" | grep -q "Detected language: CPP"; then
     DETECTED_LANG="cpp"
     echo "[full] detected C++ (auto-detected)" | _fmt | tee -a "$RUN_LOG"
-  elif [[ "$LANG_RESULT" =~ "Detected language: C" ]]; then
+  elif echo "$LANG_RESULT" | grep -q "Detected language: C"; then
     DETECTED_LANG="c"
     echo "[full] detected C (auto-detected)" | _fmt | tee -a "$RUN_LOG"
   fi
