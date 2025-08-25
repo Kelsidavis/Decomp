@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Accept YARA_RULES_DIR as a directory; resolve to a file or glob
+set -euo pipefail
+
+REAL_YARA="${YARA_REAL_BIN:-/usr/bin/yara}"
+if [[ ! -x "$REAL_YARA" ]]; then
+  # Try to locate a system yara that's not this wrapper
+  for cand in /usr/bin/yara /usr/local/bin/yara "$(command -v yara || true)"; do
+    [[ -n "$cand" && -x "$cand" && "$(readlink -f "$cand")" != "$(readlink -f "$0")" ]] && REAL_YARA="$cand" && break
+  done
+fi
+
+args=()
+rules_arg=""
+for a in "$@"; do
+  if [[ -z "$rules_arg" ]]; then
+    rules_arg="$a"
+    if [[ -d "$rules_arg" ]]; then
+      if [[ -f "$rules_arg/index.yar" ]]; then
+        rules_arg="$rules_arg/index.yar"
+      else
+        shopt -s nullglob
+        files=( "$rules_arg"/*.yar "$rules_arg"/*/*.yar )
+        shopt -u nullglob
+        (( ${#files[@]} )) || { echo "ERROR: no .yar files under $YARA_RULES_DIR" >&2; exit 2; }
+        # Expand the directory into a glob list
+        exec "$REAL_YARA" "${files[@]}" "${@:2}"
+      fi
+    fi
+    args+=( "$rules_arg" )
+  else
+    args+=( "$a" )
+  fi
+done
+
+exec "$REAL_YARA" "${args[@]}"

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# If invoked as: timeout 180 floss ..., rewrite to use FLOSS_TIMEOUT (default 600)
+set -euo pipefail
+FLOSS_T=${FLOSS_TIMEOUT:-600}
+if [[ $# -ge 3 && "$2" == "floss" ]]; then
+  exec /usr/bin/timeout "${FLOSS_T}" "${@:2}"
+else
+  exec /usr/bin/timeout "$@"
+fi

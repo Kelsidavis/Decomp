@@ -280,6 +280,9 @@ else
   fi
 fi
 
+echo "[diag] capa -> $(command -v capa)"
+echo "[diag] yara -> $(command -v yara)"
+
 # -------------------- analyze (label) with LLM4Decompile --------------------
 stage "analyze(label) with profile: ${LLM_PROFILE_LABEL}"; start_hb
 use_profile "$LLM_PROFILE_LABEL"
@@ -297,11 +300,15 @@ fi
 stage "humanize (AST-safe rename)"; start_hb
 SRC_DIR="$WORK_DIR/recovered_project/src"
 OUT_DIR="$WORK_DIR/recovered_project_human"
-mkdir -p "$(dirname "$OUT_DIR")"
-stdbuf -oL -eL python3 tools/humanize_source.py \
-  --src-dir "$SRC_DIR" \
-  --out-dir "$OUT_DIR" \
-  --mapping "$JSONL" 2>&1 | _fmt | tee -a "$RUN_LOG"
+if [[ -d "$SRC_DIR" ]]; then
+  mkdir -p "$(dirname "$OUT_DIR")"
+  stdbuf -oL -eL python3 tools/humanize_source.py \
+    --src-dir "$SRC_DIR" \
+    --out-dir "$OUT_DIR" \
+    --mapping "$JSONL" 2>&1 | _fmt | tee -a "$RUN_LOG"
+else
+  echo "[humanize] src not found ($SRC_DIR) — skipping" | _fmt | tee -a "$RUN_LOG"
+fi
 stop_hb; stage_done
 
 # -------------------- re-implement (Qwen) --------------------

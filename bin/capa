@@ -1,25 +1,16 @@
 #!/usr/bin/env bash
-# Wrapper so calls to `capa` always use your project rules
+# Ensure capa always uses project rules
 set -euo pipefail
 
-# Which CAPA entry to run (use module form to avoid PATH recursion)
-CAPA_BIN=(python3 -m capa.main)
-
-# Require CAPA_RULES to be set and the dir to exist
-if [[ -z "${CAPA_RULES:-}" || ! -d "$CAPA_RULES" ]]; then
-  echo "ERROR: CAPA_RULES is unset or not a directory: '${CAPA_RULES:-<unset>}'" >&2
-  echo "Set CAPA_RULES to your rules folder (e.g., projectroot/rules/capa)." >&2
+: "${CAPA_RULES:?Set CAPA_RULES to your rules directory (e.g., projectroot/rules/capa)}"
+if [[ ! -d "$CAPA_RULES" ]]; then
+  echo "ERROR: CAPA_RULES does not exist: $CAPA_RULES" >&2
   exit 2
 fi
 
-# If caller already passed -r/--rules, don't add another
-have_rules=0
+# If caller already provided -r/--rules, don't add another
 for a in "$@"; do
-  [[ "$a" == "-r" || "$a" == "--rules" ]] && have_rules=1 && break
+  [[ "$a" == "-r" || "$a" == "--rules" ]] && exec python3 -m capa.main "$@"
 done
-if [[ "$have_rules" -eq 0 ]]; then
-  set -- -r "$CAPA_RULES" "$@"
-fi
 
-# Exec capa
-exec "${CAPA_BIN[@]}" "$@"
+exec python3 -m capa.main -r "$CAPA_RULES" "$@"
