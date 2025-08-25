@@ -20,6 +20,10 @@ set -euo pipefail
 : "${REIMPL_THRESHOLD:=0.78}"
 : "${REIMPL_MAX_FNS:=120}"
 
+: "${FAKE_LIBC_DIR:=$PWD/tools/fake_libc_include}"
+export FAKE_LIBC_DIR
+
+
 DO_PREFLIGHT=1
 RESET_RUN=0
 USER_BIN=""

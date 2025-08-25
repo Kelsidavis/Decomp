@@ -1,22 +1,24 @@
-# Core (used by label.py / reimplement.py / scripts)
-requests>=2.31.0
-PyYAML>=6.0
+# ---------------- Core runtime ----------------
+requests>=2.32.0
+PyYAML>=6.0.1
 tqdm>=4.66.0
+rich>=13.7.0
 
-# Parsing / source rewrite (AST-safe humanization)
+# ---------------- Function Hunt enrichers ----------------
+# YARA bindings (Python); CLI "yara" is an OS package (see notes below)
+yara-python>=4.5.0
+# CAPA Python package (provides the `capa` CLI as well)
+flare-capa>=7.0.0
+# FLARE FLOSS string deobfuscation (Python package & CLI)
+floss>=2.2.0
+
+# ---------------- Pre-unpack & PE helpers ----------------
+pefile>=2023.2.7
+
+# ---------------- AST-assisted humanizer ----------------
 pycparser>=2.22
 
-# Function Hunt enrichers
-# If you call YARA from Python, keep this; if you only consume pre-made JSONL, you can omit.
-yara-python>=4.5.0
-
-# capa CLI is published on PyPI as "flare-capa" (not "capa").
-# Keep only if you plan to run capa via Python/CLI from this environment.
-flare-capa>=6.1.0
-
-# Optional: FLOSS (string deobfuscation) — PyPI name is "flare-floss"
-flare-floss>=2.2.0
-
-# Optional (for pretty logs)
-rich>=13.7.0
+# ---------------- Optional quality-of-life (safe to omit) ----------------
+colorama>=0.4.6        # prettier console on Windows; harmless elsewhere
+packaging>=24.0        # version/feature parsing in helpers
 
